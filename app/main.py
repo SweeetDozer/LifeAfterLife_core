@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from app.db.database import db
-from app.routes import auth
+from app.routes import auth, trees
+
+
 
 app = FastAPI()
 
@@ -13,3 +15,4 @@ async def shutdown():
     await db.disconnect()
 
 app.include_router(auth.router)
+app.include_router(trees.router)
