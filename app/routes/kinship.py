@@ -32,10 +32,20 @@ async def get_kinship(
         raise HTTPException(status_code=404, detail="No path")
 
     relations = await kinship_service.path_to_relations(path)
-    result = kinship_service.interpret(relations)
+    result = await kinship_service.interpret(relations, to_person_id)
+
+    line = await kinship_service.detect_line(relations)
+
+    lca = await graph_service.find_lca(
+        tree_id,
+        from_person_id,
+        to_person_id
+    )
 
     return {
-        "path": path,
-        "relations": relations,
-        "result": result
+    "path": path,
+    "relations": relations,
+    "result": result,
+    "line": line,
+    "lca": lca
     }
