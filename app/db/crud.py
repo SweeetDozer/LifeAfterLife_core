@@ -35,6 +35,7 @@ class CRUD:
         self,
         tree_id: int,
         first_name: str,
+        middle_name: str,
         last_name: str,
         birth_date,
         death_date,
@@ -42,16 +43,17 @@ class CRUD:
     ):
         query = """
         INSERT INTO persons (
-            tree_id, first_name, last_name,
+            tree_id, first_name, middle_name, last_name,
             birth_date, death_date, description
         )
-        VALUES ($1, $2, $3, $4, $5, $6)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING id
         """
         return await db.pool.fetchval(
             query,
             tree_id,
             first_name,
+            middle_name,
             last_name,
             birth_date,
             death_date,
@@ -108,6 +110,13 @@ class CRUD:
         """
         return await db.pool.fetch(query, tree_id)
 
+    async def get_relationship(self, from_id: int, to_id: int):
+        query = """
+        SELECT relationship_type
+        FROM relationships
+        WHERE from_person_id = $1 AND to_person_id = $2
+        """
+        return await db.pool.fetchrow(query, from_id, to_id)
 
 
 

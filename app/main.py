@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from app.db.database import db
-from app.routes import auth, graph, persons, relationships, trees
+from app.routes import auth, graph, kinship, persons, relationships, trees
 
 
 
@@ -24,3 +24,4 @@ app.include_router(trees.router)
 app.include_router(persons.router)
 app.include_router(relationships.router)
 app.include_router(graph.router)
+app.include_router(kinship.router)

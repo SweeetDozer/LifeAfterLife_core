@@ -21,6 +21,7 @@ async def create_person(person: PersonCreate, token: str = Header()):
     person_id = await crud.create_person(
         person.tree_id,
         person.first_name,
+        person.middle_name,
         person.last_name,
         person.birth_date,
         person.death_date,
