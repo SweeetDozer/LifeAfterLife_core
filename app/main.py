@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from app.db.database import db
-from app.routes import auth, trees
+from app.routes import auth, persons, relationships, trees
 
 
 
@@ -16,3 +16,10 @@ async def shutdown():
 
 app.include_router(auth.router)
 app.include_router(trees.router)
+app.include_router(auth.router)
+app.include_router(trees.router)
+app.include_router(persons.router)
+app.include_router(auth.router)
+app.include_router(trees.router)
+app.include_router(persons.router)
+app.include_router(relationships.router)
