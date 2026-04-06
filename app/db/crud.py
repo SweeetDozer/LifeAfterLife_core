@@ -37,13 +37,14 @@ class CRUD:
         first_name: str,
         middle_name: str,
         last_name: str,
+        gender,
         birth_date,
         death_date,
         description
     ):
         query = """
         INSERT INTO persons (
-            tree_id, first_name, middle_name, last_name,
+            tree_id, first_name, middle_name, last_name, gender,
             birth_date, death_date, description
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -55,6 +56,7 @@ class CRUD:
             first_name,
             middle_name,
             last_name,
+            gender,
             birth_date,
             death_date,
             description

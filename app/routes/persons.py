@@ -23,6 +23,7 @@ async def create_person(person: PersonCreate, token: str = Header()):
         person.first_name,
         person.middle_name,
         person.last_name,
+        person.gender,
         person.birth_date,
         person.death_date,
         person.description

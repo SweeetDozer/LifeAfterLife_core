@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 from typing import Optional
 from datetime import date
+from typing import Literal
 
 class PersonCreate(BaseModel):
     tree_id: int
@@ -10,3 +11,4 @@ class PersonCreate(BaseModel):
     birth_date: Optional[date] = None
     death_date: Optional[date] = None
     description: Optional[str] = None
+    gender: Optional[Literal["male", "female"]] = None
