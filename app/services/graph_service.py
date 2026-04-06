@@ -15,8 +15,11 @@ class GraphService:
 
             if frm not in graph:
                 graph[frm] = []
+            if to not in graph:
+                graph[to] = []
 
             graph[frm].append(to)
+            graph[to].append(frm)
 
         return graph
 
