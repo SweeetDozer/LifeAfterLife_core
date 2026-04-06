@@ -11,7 +11,10 @@ class KinshipService:
             rel = await crud.get_relationship(path[i], path[i+1])
 
             if rel:
-                relations.append(rel["relationship_type"])
+                relations.append({
+                    "type": rel["relationship_type"],
+                    "to": path[i+1]
+                })
             else:
                 # обратное направление (для parent)
                 rel = await crud.get_relationship(path[i+1], path[i])
@@ -45,6 +48,16 @@ class KinshipService:
         elif gender == "female":
             return base[1]
         return f"{base[0]}/{base[1]}"
+
+    async def detect_line(self, relations):
+        for rel in relations:
+            if rel["type"] == "parent":
+                person = await crud.get_person(rel["to"])
+                if person["gender"] == "male":
+                    return "по отцовской линии"
+                elif person["gender"] == "female":
+                    return "по материнской линии"
+        return ""
 
     async def interpret(self, relations, target_id):
         up = relations.count("parent")
