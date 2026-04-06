@@ -58,49 +58,55 @@ class CRUD:
             description
         )
 
-async def get_person(self, person_id: int):
-    query = "SELECT * FROM persons WHERE id = $1"
-    return await db.pool.fetchrow(query, person_id)
+    async def get_person(self, person_id: int):
+        query = "SELECT * FROM persons WHERE id = $1"
+        return await db.pool.fetchrow(query, person_id)
 
 
-async def get_tree_persons(self, tree_id: int):
-    query = "SELECT * FROM persons WHERE tree_id = $1"
-    return await db.pool.fetch(query, tree_id)
+    async def get_tree_persons(self, tree_id: int):
+        query = "SELECT * FROM persons WHERE tree_id = $1"
+        return await db.pool.fetch(query, tree_id)
 # ================================================================================================================  
-async def create_relationship(
-    self,
-    tree_id: int,
-    from_person_id: int,
-    to_person_id: int,
-    relationship_type: str
-):
-    query = """
-    INSERT INTO relationships (
-        tree_id,
-        from_person_id,
-        to_person_id,
-        relationship_type
-    )
-    VALUES ($1, $2, $3, $4)
-    """
-    await db.pool.execute(
-        query,
-        tree_id,
-        from_person_id,
-        to_person_id,
-        relationship_type
-    )
+    async def create_relationship(
+        self,
+        tree_id: int,
+        from_person_id: int,
+        to_person_id: int,
+        relationship_type: str
+    ):
+        query = """
+        INSERT INTO relationships (
+            tree_id,
+            from_person_id,
+            to_person_id,
+            relationship_type
+        )
+        VALUES ($1, $2, $3, $4)
+        """
+        await db.pool.execute(
+            query,
+            tree_id,
+            from_person_id,
+            to_person_id,
+            relationship_type
+        )
 
 
-async def get_person_relationships(self, person_id: int):
-    query = """
-    SELECT * FROM relationships
-    WHERE from_person_id = $1
-    """
-    return await db.pool.fetch(query, person_id)
+    async def get_person_relationships(self, person_id: int):
+        query = """
+        SELECT * FROM relationships
+        WHERE from_person_id = $1
+        """
+        return await db.pool.fetch(query, person_id)
 
-
-
+# ================================================================================================================
+    async def get_tree_relationships(self, tree_id: int):
+        query = """
+        SELECT from_person_id, to_person_id, relationship_type
+        FROM relationships
+        WHERE tree_id = $1
+        """
+        return await db.pool.fetch(query, tree_id)
 
 
 
