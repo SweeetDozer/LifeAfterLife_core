@@ -1,38 +1,32 @@
-from fastapi import APIRouter, Depends
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Path
 
 from app.core.security import get_current_user_id
-from app.db.crud import crud
-from app.models.person import PersonCreate
-from app.services.permissions import ensure_person_view_access, ensure_tree_edit_access, ensure_tree_view_access
+from app.models.person import PersonCreate, PersonCreateResponse, PersonRead
+from app.services.person_service import PersonServiceError, person_service
 
 router = APIRouter(prefix="/persons", tags=["persons"])
+CurrentUserId = Annotated[int, Depends(get_current_user_id)]
+TreeIdPath = Annotated[int, Path(gt=0)]
+PersonIdPath = Annotated[int, Path(gt=0)]
 
 
-@router.post("/")
-async def create_person(person: PersonCreate, user_id: int = Depends(get_current_user_id)):
-    await ensure_tree_edit_access(user_id, person.tree_id)
+@router.post("/", response_model=PersonCreateResponse)
+async def create_person(person: PersonCreate, user_id: CurrentUserId):
+    try:
+        person_id = await person_service.create_person(user_id, person)
+    except PersonServiceError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    person_id = await crud.create_person(
-        person.tree_id,
-        person.first_name,
-        person.middle_name,
-        person.last_name,
-        person.gender,
-        person.birth_date,
-        person.death_date,
-        person.description,
-        person.photo_url,
-    )
-
-    return {"person_id": person_id}
+    return PersonCreateResponse(person_id=person_id)
 
 
-@router.get("/tree/{tree_id}")
-async def get_persons(tree_id: int, user_id: int = Depends(get_current_user_id)):
-    await ensure_tree_view_access(user_id, tree_id)
-    return await crud.get_tree_persons(tree_id)
+@router.get("/tree/{tree_id}", response_model=list[PersonRead])
+async def get_persons(tree_id: TreeIdPath, user_id: CurrentUserId):
+    return await person_service.get_tree_persons(user_id, tree_id)
 
 
-@router.get("/{person_id}")
-async def get_person(person_id: int, user_id: int = Depends(get_current_user_id)):
-    return await ensure_person_view_access(user_id, person_id)
+@router.get("/{person_id}", response_model=PersonRead)
+async def get_person(person_id: PersonIdPath, user_id: CurrentUserId):
+    return await person_service.get_person(user_id, person_id)

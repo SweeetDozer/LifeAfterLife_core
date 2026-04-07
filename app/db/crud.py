@@ -12,6 +12,23 @@ SELECT
 FROM family_trees
 """
 
+USER_AUTH_SELECT = """
+SELECT
+    id,
+    email,
+    password_hash,
+    created_at
+FROM users
+"""
+
+USER_PUBLIC_SELECT = """
+SELECT
+    id,
+    email,
+    created_at
+FROM users
+"""
+
 PERSON_SELECT = """
 SELECT
     id,
@@ -27,6 +44,16 @@ SELECT
 FROM persons
 """
 
+RELATIONSHIP_SELECT = """
+SELECT
+    id,
+    tree_id,
+    from_person_id,
+    to_person_id,
+    relationship_type::text AS relationship_type
+FROM relationships
+"""
+
 
 class CRUD:
 
@@ -38,13 +65,39 @@ class CRUD:
     def _records_to_list(records):
         return [dict(record) for record in records]
 
+    @staticmethod
+    def _executor(connection=None):
+        return connection or db.pool
+
     async def create_user(self, email: str, password_hash: str):
-        query = """
-        INSERT INTO users (email, password_hash)
-        VALUES ($1, $2)
-        RETURNING id
-        """
-        return await db.pool.fetchval(query, email, password_hash)
+        normalized_email = email.strip().lower()
+
+        async with db.pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext($1)::bigint)",
+                    normalized_email,
+                )
+
+                existing = await connection.fetchrow(
+                    """
+                    SELECT id
+                    FROM users
+                    WHERE LOWER(email) = LOWER($1)
+                    ORDER BY id
+                    LIMIT 1
+                    """,
+                    normalized_email,
+                )
+                if existing:
+                    return None
+
+                query = """
+                INSERT INTO users (email, password_hash)
+                VALUES ($1, $2)
+                RETURNING id
+                """
+                return await connection.fetchval(query, normalized_email, password_hash)
 
     async def update_user_password_hash(self, user_id: int, password_hash: str):
         query = """
@@ -55,8 +108,22 @@ class CRUD:
         await db.pool.execute(query, user_id, password_hash)
 
     async def get_user_by_email(self, email: str):
-        query = "SELECT * FROM users WHERE email = $1"
-        record = await db.pool.fetchrow(query, email)
+        normalized_email = email.strip().lower()
+        query = f"""
+        {USER_AUTH_SELECT}
+        WHERE LOWER(email) = LOWER($1)
+        ORDER BY id
+        LIMIT 1
+        """
+        record = await db.pool.fetchrow(query, normalized_email)
+        return self._record_to_dict(record)
+
+    async def get_user_by_id(self, user_id: int):
+        query = f"""
+        {USER_PUBLIC_SELECT}
+        WHERE id = $1
+        """
+        record = await db.pool.fetchrow(query, user_id)
         return self._record_to_dict(record)
 
     async def create_tree(
@@ -73,12 +140,13 @@ class CRUD:
         """
         return await db.pool.fetchval(query, owner_id, name, description, is_public)
 
-    async def get_tree(self, tree_id: int):
+    async def get_tree(self, tree_id: int, connection=None):
+        executor = self._executor(connection)
         query = f"""
         {TREE_SELECT}
         WHERE id = $1
         """
-        record = await db.pool.fetchrow(query, tree_id)
+        record = await executor.fetchrow(query, tree_id)
         return self._record_to_dict(record)
 
     async def get_user_trees(self, user_id: int):
@@ -104,7 +172,8 @@ class CRUD:
         records = await db.pool.fetch(query, user_id)
         return self._records_to_list(records)
 
-    async def user_can_view_tree(self, user_id: int, tree_id: int):
+    async def user_can_view_tree(self, user_id: int, tree_id: int, connection=None):
+        executor = self._executor(connection)
         query = """
         SELECT EXISTS (
             SELECT 1
@@ -120,9 +189,10 @@ class CRUD:
               )
         )
         """
-        return await db.pool.fetchval(query, user_id, tree_id)
+        return await executor.fetchval(query, user_id, tree_id)
 
-    async def user_can_edit_tree(self, user_id: int, tree_id: int):
+    async def user_can_edit_tree(self, user_id: int, tree_id: int, connection=None):
+        executor = self._executor(connection)
         query = """
         SELECT EXISTS (
             SELECT 1
@@ -137,7 +207,7 @@ class CRUD:
               )
         )
         """
-        return await db.pool.fetchval(query, user_id, tree_id)
+        return await executor.fetchval(query, user_id, tree_id)
 
     async def create_person(
         self,
@@ -150,7 +220,9 @@ class CRUD:
         death_date=None,
         description: str | None = None,
         photo_url: str | None = None,
+        connection=None,
     ):
+        executor = self._executor(connection)
         query = """
         INSERT INTO persons (
             tree_id,
@@ -166,7 +238,7 @@ class CRUD:
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING id
         """
-        return await db.pool.fetchval(
+        return await executor.fetchval(
             query,
             tree_id,
             first_name,
@@ -179,21 +251,32 @@ class CRUD:
             description,
         )
 
-    async def get_person(self, person_id: int):
+    async def get_person(self, person_id: int, connection=None):
+        executor = self._executor(connection)
         query = f"""
         {PERSON_SELECT}
         WHERE id = $1
         """
-        record = await db.pool.fetchrow(query, person_id)
+        record = await executor.fetchrow(query, person_id)
         return self._record_to_dict(record)
 
-    async def get_tree_persons(self, tree_id: int):
+    async def get_tree_person(self, tree_id: int, person_id: int, connection=None):
+        executor = self._executor(connection)
+        query = f"""
+        {PERSON_SELECT}
+        WHERE tree_id = $1 AND id = $2
+        """
+        record = await executor.fetchrow(query, tree_id, person_id)
+        return self._record_to_dict(record)
+
+    async def get_tree_persons(self, tree_id: int, connection=None):
+        executor = self._executor(connection)
         query = f"""
         {PERSON_SELECT}
         WHERE tree_id = $1
         ORDER BY first_name, last_name, id
         """
-        records = await db.pool.fetch(query, tree_id)
+        records = await executor.fetch(query, tree_id)
         return self._records_to_list(records)
 
     async def create_relationship(
@@ -202,7 +285,9 @@ class CRUD:
         from_person_id: int,
         to_person_id: int,
         relationship_type: str,
+        connection=None,
     ):
+        executor = self._executor(connection)
         query = """
         INSERT INTO relationships (
             tree_id,
@@ -214,7 +299,7 @@ class CRUD:
         ON CONFLICT (from_person_id, to_person_id, relationship_type) DO NOTHING
         RETURNING id
         """
-        return await db.pool.fetchval(
+        return await executor.fetchval(
             query,
             tree_id,
             from_person_id,
@@ -222,32 +307,87 @@ class CRUD:
             relationship_type,
         )
 
-    async def get_person_relationships(self, person_id: int):
-        query = """
-        SELECT *
-        FROM relationships
-        WHERE from_person_id = $1
+    async def get_person_relationships(self, person_id: int, connection=None):
+        executor = self._executor(connection)
+        query = f"""
+        {RELATIONSHIP_SELECT}
+        WHERE from_person_id = $1 OR to_person_id = $1
+        ORDER BY id
         """
-        records = await db.pool.fetch(query, person_id)
+        records = await executor.fetch(query, person_id)
         return self._records_to_list(records)
 
-    async def get_tree_relationships(self, tree_id: int):
-        query = """
-        SELECT id, tree_id, from_person_id, to_person_id, relationship_type
-        FROM relationships
+    async def get_tree_relationships(self, tree_id: int, connection=None):
+        executor = self._executor(connection)
+        query = f"""
+        {RELATIONSHIP_SELECT}
         WHERE tree_id = $1
+        ORDER BY id
         """
-        records = await db.pool.fetch(query, tree_id)
+        records = await executor.fetch(query, tree_id)
         return self._records_to_list(records)
 
-    async def get_relationship(self, from_id: int, to_id: int):
-        query = """
-        SELECT relationship_type
-        FROM relationships
-        WHERE from_person_id = $1 AND to_person_id = $2
-        """
-        record = await db.pool.fetchrow(query, from_id, to_id)
-        return self._record_to_dict(record)
+    async def get_ordered_relationship_types(
+        self,
+        from_id: int,
+        to_id: int,
+        tree_id: int | None = None,
+        connection=None,
+    ):
+        executor = self._executor(connection)
+        if tree_id is None:
+            query = """
+            SELECT DISTINCT relationship_type::text AS relationship_type
+            FROM relationships
+            WHERE from_person_id = $1 AND to_person_id = $2
+            ORDER BY relationship_type::text
+            """
+            records = await executor.fetch(query, from_id, to_id)
+        else:
+            query = """
+            SELECT DISTINCT relationship_type::text AS relationship_type
+            FROM relationships
+            WHERE tree_id = $1
+              AND from_person_id = $2
+              AND to_person_id = $3
+            ORDER BY relationship_type::text
+            """
+            records = await executor.fetch(query, tree_id, from_id, to_id)
+        return self._records_to_list(records)
+
+    async def get_pair_relationships(
+        self,
+        first_person_id: int,
+        second_person_id: int,
+        tree_id: int | None = None,
+        connection=None,
+    ):
+        executor = self._executor(connection)
+        if tree_id is None:
+            query = f"""
+            {RELATIONSHIP_SELECT}
+            WHERE (from_person_id = $1 AND to_person_id = $2)
+               OR (from_person_id = $2 AND to_person_id = $1)
+            ORDER BY id
+            """
+            records = await executor.fetch(query, first_person_id, second_person_id)
+        else:
+            query = f"""
+            {RELATIONSHIP_SELECT}
+            WHERE tree_id = $1
+              AND (
+                    (from_person_id = $2 AND to_person_id = $3)
+                    OR (from_person_id = $3 AND to_person_id = $2)
+              )
+            ORDER BY id
+            """
+            records = await executor.fetch(
+                query,
+                tree_id,
+                first_person_id,
+                second_person_id,
+            )
+        return self._records_to_list(records)
 
 
 crud = CRUD()

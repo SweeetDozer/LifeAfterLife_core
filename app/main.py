@@ -1,24 +1,29 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
+from app.core.config import settings
 from app.db.database import db
-from app.routes import auth, graph, kinship, persons, relationships, trees
-
-app = FastAPI()
+from app.routes import ROUTERS
 
 
-@app.on_event("startup")
-async def startup():
-    await db.connect()
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    settings.validate_runtime()
+    try:
+        await db.connect()
+        yield
+    finally:
+        await db.disconnect()
 
 
-@app.on_event("shutdown")
-async def shutdown():
-    await db.disconnect()
+def create_app() -> FastAPI:
+    application = FastAPI(lifespan=lifespan)
+
+    for router in ROUTERS:
+        application.include_router(router)
+
+    return application
 
 
-app.include_router(auth.router)
-app.include_router(trees.router)
-app.include_router(persons.router)
-app.include_router(relationships.router)
-app.include_router(graph.router)
-app.include_router(kinship.router)
+app = create_app()

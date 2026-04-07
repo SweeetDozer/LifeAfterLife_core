@@ -1,31 +1,303 @@
+from collections.abc import Mapping
+from typing import Final
+
 from app.db.crud import crud
+from app.services.graph_service import graph_service
+
+
+PEER_RELATIONSHIP_TYPES: Final[frozenset[str]] = frozenset(
+    {"spouse", "sibling", "friend"}
+)
+SUPPORTED_RELATIONSHIP_TYPES: Final[frozenset[str]] = (
+    PEER_RELATIONSHIP_TYPES | frozenset({"parent"})
+)
+
+
+class RelationshipServiceError(Exception):
+    pass
+
+
+class RelationshipValidationError(RelationshipServiceError):
+    pass
 
 
 class RelationshipService:
 
-    async def create_relationship(self, from_id, to_id, rel_type):
+    @staticmethod
+    def _find_relation(relations, from_id, to_id, rel_type):
+        for relation in relations:
+            if (
+                relation["from_person_id"] == from_id
+                and relation["to_person_id"] == to_id
+                and relation["relationship_type"] == rel_type
+            ):
+                return relation
+        return None
+
+    @staticmethod
+    def _get_person_id(person: Mapping[str, object]) -> int:
+        return int(person["id"])
+
+    @staticmethod
+    def _get_tree_id(person: Mapping[str, object]) -> int:
+        return int(person["tree_id"])
+
+    @staticmethod
+    def _validate_person_context(
+        from_person: Mapping[str, object],
+        to_person: Mapping[str, object],
+    ) -> int:
+        from_id = RelationshipService._get_person_id(from_person)
+        to_id = RelationshipService._get_person_id(to_person)
         if from_id == to_id:
-            raise ValueError("Cannot relate person to themselves")
+            raise RelationshipValidationError("Cannot relate person to themselves")
 
-        person1 = await crud.get_person(from_id)
-        person2 = await crud.get_person(to_id)
+        tree_id = RelationshipService._get_tree_id(from_person)
+        if tree_id != RelationshipService._get_tree_id(to_person):
+            raise RelationshipValidationError("Persons must belong to same tree")
 
-        if not person1 or not person2:
-            raise ValueError("Person not found")
+        return tree_id
 
-        if person1["tree_id"] != person2["tree_id"]:
-            raise ValueError("Persons must belong to same tree")
+    @staticmethod
+    def _validate_relationship_type(relationship_type: str) -> None:
+        if relationship_type not in SUPPORTED_RELATIONSHIP_TYPES:
+            raise RelationshipValidationError(
+                f"Unsupported relationship type: {relationship_type}"
+            )
 
-        tree_id = person1["tree_id"]
-        created_id = await crud.create_relationship(tree_id, from_id, to_id, rel_type)
+    @staticmethod
+    def _collect_conflicting_types(relations, relationship_type: str) -> list[str]:
+        return sorted(
+            {
+                relation["relationship_type"]
+                for relation in relations
+                if relation["relationship_type"] != relationship_type
+            }
+        )
 
-        if created_id is None:
-            raise ValueError("Relationship already exists")
+    @staticmethod
+    def _shared_direct_parent_ids(
+        first_ancestors: Mapping[int, int],
+        second_ancestors: Mapping[int, int],
+    ) -> set[int]:
+        first_parents = {
+            person_id for person_id, depth in first_ancestors.items() if depth == 1
+        }
+        second_parents = {
+            person_id for person_id, depth in second_ancestors.items() if depth == 1
+        }
+        return first_parents & second_parents
 
-        if rel_type in ["spouse", "sibling", "friend"]:
-            await crud.create_relationship(tree_id, to_id, from_id, rel_type)
+    async def _get_lineage_context(self, tree_id, from_id, to_id, connection=None):
+        from_ancestors = await graph_service.get_ancestors(
+            tree_id,
+            from_id,
+            connection=connection,
+        )
+        to_ancestors = await graph_service.get_ancestors(
+            tree_id,
+            to_id,
+            connection=connection,
+        )
+        return {
+            "from_is_ancestor_of_to": from_id in to_ancestors,
+            "to_is_ancestor_of_from": to_id in from_ancestors,
+            "shared_direct_parent_ids": self._shared_direct_parent_ids(
+                from_ancestors,
+                to_ancestors,
+            ),
+        }
+
+    @staticmethod
+    def _raise_if_conflicting_pair_state(relations, relationship_type: str) -> None:
+        conflicting_types = RelationshipService._collect_conflicting_types(
+            relations,
+            relationship_type,
+        )
+        if conflicting_types:
+            existing = ", ".join(conflicting_types)
+            raise RelationshipValidationError(
+                "Cannot create relationship because pair already has "
+                f"incompatible relationship(s): {existing}"
+            )
+
+    async def _ensure_parent_relationship_allowed(
+        self,
+        tree_id: int,
+        from_id: int,
+        to_id: int,
+        connection=None,
+    ) -> None:
+        lineage = await self._get_lineage_context(
+            tree_id,
+            from_id,
+            to_id,
+            connection=connection,
+        )
+        if lineage["to_is_ancestor_of_from"]:
+            raise RelationshipValidationError(
+                "Parent relationship would create an ancestry cycle"
+            )
+        if lineage["from_is_ancestor_of_to"]:
+            raise RelationshipValidationError(
+                "Parent relationship is invalid: ancestor is already above descendant"
+            )
+        if lineage["shared_direct_parent_ids"]:
+            raise RelationshipValidationError(
+                "Parent relationship cannot be created between siblings"
+            )
+
+    async def _ensure_peer_relationship_allowed(
+        self,
+        tree_id: int,
+        from_id: int,
+        to_id: int,
+        relationship_type: str,
+        connection=None,
+    ) -> None:
+        if relationship_type == "friend":
+            return
+
+        lineage = await self._get_lineage_context(
+            tree_id,
+            from_id,
+            to_id,
+            connection=connection,
+        )
+        if lineage["from_is_ancestor_of_to"] or lineage["to_is_ancestor_of_from"]:
+            raise RelationshipValidationError(
+                f"{relationship_type.title()} relationship cannot connect "
+                "ancestors and descendants"
+            )
+        if relationship_type == "spouse" and lineage["shared_direct_parent_ids"]:
+            raise RelationshipValidationError(
+                "Spouse relationship cannot be created between siblings"
+            )
+
+    async def _persist_relationship(
+        self,
+        tree_id: int,
+        from_id: int,
+        to_id: int,
+        relationship_type: str,
+        connection=None,
+    ) -> int:
+        relationship_id = await crud.create_relationship(
+            tree_id,
+            from_id,
+            to_id,
+            relationship_type,
+            connection=connection,
+        )
+        if relationship_id is not None:
+            return relationship_id
+
+        pair_relations = await crud.get_pair_relationships(
+            from_id,
+            to_id,
+            tree_id=tree_id,
+            connection=connection,
+        )
+        relation = self._find_relation(
+            pair_relations,
+            from_id,
+            to_id,
+            relationship_type,
+        )
+        if relation:
+            return relation["id"]
+
+        raise RelationshipServiceError("Failed to persist relationship")
+
+    async def create_relationship(
+        self,
+        *,
+        from_person: Mapping[str, object],
+        to_person: Mapping[str, object],
+        relationship_type: str,
+        connection=None,
+    ) -> int:
+        self._validate_relationship_type(relationship_type)
+        tree_id = self._validate_person_context(from_person, to_person)
+        from_id = self._get_person_id(from_person)
+        to_id = self._get_person_id(to_person)
+
+        pair_relations = await crud.get_pair_relationships(
+            from_id,
+            to_id,
+            tree_id=tree_id,
+            connection=connection,
+        )
+        self._raise_if_conflicting_pair_state(pair_relations, relationship_type)
+
+        direct_relation = self._find_relation(
+            pair_relations,
+            from_id,
+            to_id,
+            relationship_type,
+        )
+        reverse_relation = self._find_relation(
+            pair_relations,
+            to_id,
+            from_id,
+            relationship_type,
+        )
+
+        if relationship_type == "parent":
+            if direct_relation:
+                raise RelationshipValidationError("Relationship already exists")
+            if reverse_relation:
+                raise RelationshipValidationError(
+                    "Parent relationship cannot point in both directions"
+                )
+
+            await self._ensure_parent_relationship_allowed(
+                tree_id,
+                from_id,
+                to_id,
+                connection=connection,
+            )
+            return await self._persist_relationship(
+                tree_id,
+                from_id,
+                to_id,
+                relationship_type,
+                connection=connection,
+            )
+
+        if direct_relation and reverse_relation:
+            raise RelationshipValidationError("Relationship already exists")
+
+        await self._ensure_peer_relationship_allowed(
+            tree_id,
+            from_id,
+            to_id,
+            relationship_type,
+            connection=connection,
+        )
+
+        created_id = (
+            direct_relation["id"]
+            if direct_relation
+            else await self._persist_relationship(
+                tree_id,
+                from_id,
+                to_id,
+                relationship_type,
+                connection=connection,
+            )
+        )
+
+        if reverse_relation is None:
+            await self._persist_relationship(
+                tree_id,
+                to_id,
+                from_id,
+                relationship_type,
+                connection=connection,
+            )
 
         return created_id
 
 
-service = RelationshipService()
+relationship_service = RelationshipService()

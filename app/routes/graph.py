@@ -1,29 +1,34 @@
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.security import get_current_user_id
+from app.models.graph import GraphPathResponse
 from app.services.graph_service import graph_service
-from app.services.permissions import ensure_person_view_access, ensure_tree_view_access
+from app.services.permissions import ensure_tree_persons_access
 
 router = APIRouter(prefix="/graph", tags=["graph"])
+TreeIdQuery = Annotated[int, Query(gt=0)]
+PersonIdQuery = Annotated[int, Query(gt=0)]
 
 
-@router.get("/path")
+@router.get("/path", response_model=GraphPathResponse)
 async def find_path(
-    tree_id: int,
-    from_person_id: int,
-    to_person_id: int,
+    tree_id: TreeIdQuery,
+    from_person_id: PersonIdQuery,
+    to_person_id: PersonIdQuery,
     user_id: int = Depends(get_current_user_id),
 ):
-    await ensure_tree_view_access(user_id, tree_id)
-    from_person = await ensure_person_view_access(user_id, from_person_id)
-    to_person = await ensure_person_view_access(user_id, to_person_id)
-
-    if from_person["tree_id"] != tree_id or to_person["tree_id"] != tree_id:
-        raise HTTPException(status_code=400, detail="Persons must belong to the requested tree")
+    await ensure_tree_persons_access(
+        user_id,
+        tree_id,
+        [from_person_id, to_person_id],
+        access="view",
+    )
 
     path = await graph_service.find_path(tree_id, from_person_id, to_person_id)
 
     if not path:
         raise HTTPException(status_code=404, detail="No path found")
 
-    return {"path": path}
+    return GraphPathResponse(path=path)

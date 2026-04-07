@@ -1,9 +1,48 @@
-from typing import Optional
+from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, PositiveInt, field_validator
 
 
-class TreeCreate(BaseModel):
+class TreeBase(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
     name: str
-    description: Optional[str] = None
+    description: str | None = None
     is_public: bool = False
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def normalize_description(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip()
+            return normalized or None
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if not value:
+            raise ValueError("Tree name cannot be empty")
+        if len(value) > 255:
+            raise ValueError("Tree name must be at most 255 characters long")
+        return value
+
+
+class TreeCreate(TreeBase):
+    pass
+
+
+class TreeCreateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tree_id: PositiveInt
+
+
+class TreeRead(TreeBase):
+    id: PositiveInt
+    owner_id: PositiveInt | None = None
+    created_at: datetime
+    access_level: Literal["owner", "view", "edit"]

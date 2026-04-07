@@ -2,12 +2,12 @@ from fastapi import APIRouter, Depends
 
 from app.core.security import get_current_user_id
 from app.db.crud import crud
-from app.models.tree import TreeCreate
+from app.models.tree import TreeCreate, TreeCreateResponse, TreeRead
 
 router = APIRouter(prefix="/trees", tags=["trees"])
 
 
-@router.post("/")
+@router.post("/", response_model=TreeCreateResponse)
 async def create_tree(tree: TreeCreate, user_id: int = Depends(get_current_user_id)):
     tree_id = await crud.create_tree(
         user_id,
@@ -15,9 +15,9 @@ async def create_tree(tree: TreeCreate, user_id: int = Depends(get_current_user_
         tree.description,
         tree.is_public,
     )
-    return {"tree_id": tree_id}
+    return TreeCreateResponse(tree_id=tree_id)
 
 
-@router.get("/")
+@router.get("/", response_model=list[TreeRead])
 async def get_trees(user_id: int = Depends(get_current_user_id)):
     return await crud.get_user_trees(user_id)

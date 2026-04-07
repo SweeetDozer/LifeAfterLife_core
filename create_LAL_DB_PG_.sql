@@ -26,6 +26,8 @@ CREATE TABLE users (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE UNIQUE INDEX uq_users_email_lower ON users (LOWER(email));
+
 -- =====================================================
 -- family_trees
 -- =====================================================
@@ -62,10 +64,17 @@ CREATE TABLE persons (
     photo_url VARCHAR(500),
     info_about_person TEXT,
 
+    CHECK (
+        date_of_birth IS NULL
+        OR date_of_death IS NULL
+        OR date_of_death >= date_of_birth
+    ),
+
     FOREIGN KEY (tree_id) REFERENCES family_trees(id) ON DELETE CASCADE
 );
 
 CREATE INDEX idx_persons_tree_id ON persons (tree_id);
+CREATE UNIQUE INDEX uq_persons_tree_id_id ON persons (tree_id, id);
 
 -- =====================================================
 -- relationships (ключевая таблица)
@@ -85,8 +94,8 @@ CREATE TABLE relationships (
     UNIQUE (from_person_id, to_person_id, relationship_type),
 
     FOREIGN KEY (tree_id) REFERENCES family_trees(id) ON DELETE CASCADE,
-    FOREIGN KEY (from_person_id) REFERENCES persons(id) ON DELETE CASCADE,
-    FOREIGN KEY (to_person_id) REFERENCES persons(id) ON DELETE CASCADE
+    FOREIGN KEY (tree_id, from_person_id) REFERENCES persons(tree_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (tree_id, to_person_id) REFERENCES persons(tree_id, id) ON DELETE CASCADE
 );
 
 CREATE INDEX idx_relationships_tree_id ON relationships (tree_id);
