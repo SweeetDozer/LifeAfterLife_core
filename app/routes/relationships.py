@@ -1,29 +1,28 @@
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException
+
+from app.core.security import get_current_user_id
 from app.models.relationship import RelationshipCreate
+from app.services.permissions import ensure_person_edit_access
 from app.services.relationship_service import service
-from app.core.security import get_user_by_token
 
 router = APIRouter(prefix="/relationships", tags=["relationships"])
 
 
-def get_current_user(token: str):
-    user_id = get_user_by_token(token)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    return user_id
-
-
 @router.post("/")
-async def create_relationship(rel: RelationshipCreate, token: str = Header()):
-    user_id = get_current_user(token)
+async def create_relationship(
+    rel: RelationshipCreate,
+    user_id: int = Depends(get_current_user_id),
+):
+    await ensure_person_edit_access(user_id, rel.from_person_id)
+    await ensure_person_edit_access(user_id, rel.to_person_id)
 
     try:
-        await service.create_relationship(
+        relationship_id = await service.create_relationship(
             rel.from_person_id,
             rel.to_person_id,
-            rel.relationship_type
+            rel.relationship_type,
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return {"status": "ok"}
+    return {"relationship_id": relationship_id}

@@ -1,5 +1,7 @@
 import asyncpg
+
 from app.core.config import settings
+
 
 class Database:
     def __init__(self):
@@ -11,10 +13,13 @@ class Database:
             port=settings.DB_PORT,
             user=settings.DB_USER,
             password=settings.DB_PASSWORD,
-            database=settings.DB_NAME
+            database=settings.DB_NAME,
         )
 
     async def disconnect(self):
-        await self.pool.close()
+        if self.pool is not None:
+            await self.pool.close()
+            self.pool = None
+
 
 db = Database()
