@@ -69,6 +69,10 @@ class Settings:
             raise RuntimeError(
                 "ACCESS_TOKEN_EXPIRE_MINUTES must be greater than zero"
             )
+        if "*" in self.CORS_ALLOW_ORIGINS:
+            raise RuntimeError(
+                "CORS_ALLOW_ORIGINS cannot contain '*' when credentials are enabled"
+            )
 
 
 settings = Settings()

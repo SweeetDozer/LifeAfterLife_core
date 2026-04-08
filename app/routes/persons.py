@@ -3,7 +3,13 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Path
 
 from app.core.security import get_current_user_id
-from app.models.person import PersonCreate, PersonCreateResponse, PersonRead
+from app.models.person import (
+    PersonCreate,
+    PersonCreateResponse,
+    PersonDeleteResponse,
+    PersonRead,
+    PersonUpdate,
+)
 from app.services.person_service import PersonServiceError, person_service
 
 router = APIRouter(prefix="/persons", tags=["persons"])
@@ -30,3 +36,23 @@ async def get_persons(tree_id: TreeIdPath, user_id: CurrentUserId):
 @router.get("/{person_id}", response_model=PersonRead)
 async def get_person(person_id: PersonIdPath, user_id: CurrentUserId):
     return await person_service.get_person(user_id, person_id)
+
+
+@router.patch("/{person_id}", response_model=PersonRead)
+async def update_person(
+    person_id: PersonIdPath,
+    person_update: PersonUpdate,
+    user_id: CurrentUserId,
+):
+    try:
+        return await person_service.update_person(user_id, person_id, person_update)
+    except PersonServiceError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.delete("/{person_id}", response_model=PersonDeleteResponse)
+async def delete_person(person_id: PersonIdPath, user_id: CurrentUserId):
+    try:
+        return await person_service.delete_person(user_id, person_id)
+    except PersonServiceError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc

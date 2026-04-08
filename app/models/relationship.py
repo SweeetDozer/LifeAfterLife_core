@@ -21,3 +21,10 @@ class RelationshipCreateResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     relationship_id: PositiveInt
+
+
+class RelationshipDeleteResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    detail: str
+    deleted_relationships: int

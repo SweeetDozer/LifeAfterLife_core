@@ -299,5 +299,43 @@ class RelationshipService:
 
         return created_id
 
+    async def delete_relationship(
+        self,
+        *,
+        relationship_id: int,
+        connection=None,
+    ) -> int:
+        relationship = await crud.get_relationship(relationship_id, connection=connection)
+        if not relationship:
+            raise RelationshipValidationError("Relationship not found")
+
+        pair_relations = await crud.get_pair_relationships(
+            relationship["from_person_id"],
+            relationship["to_person_id"],
+            tree_id=relationship["tree_id"],
+            connection=connection,
+        )
+        relationship_type = relationship["relationship_type"]
+        relationship_ids_to_delete = {relationship_id}
+
+        if relationship_type in PEER_RELATIONSHIP_TYPES:
+            for pair_relation in pair_relations:
+                if pair_relation["relationship_type"] == relationship_type:
+                    relationship_ids_to_delete.add(pair_relation["id"])
+
+        deleted_count = 0
+        for current_relationship_id in relationship_ids_to_delete:
+            deleted = await crud.delete_relationship(
+                current_relationship_id,
+                connection=connection,
+            )
+            if deleted:
+                deleted_count += 1
+
+        if deleted_count == 0:
+            raise RelationshipServiceError("Failed to delete relationship")
+
+        return deleted_count
+
 
 relationship_service = RelationshipService()

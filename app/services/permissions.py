@@ -76,6 +76,20 @@ async def ensure_tree_edit_access(user_id: int, tree_id: int, connection=None):
     )
 
 
+async def ensure_tree_owner_access(user_id: int, tree_id: int, connection=None):
+    tree = await crud.get_tree(tree_id, connection=connection)
+    if not tree:
+        raise _not_found("Tree not found")
+
+    if tree.get("owner_id") == user_id:
+        return tree
+
+    if await crud.user_can_view_tree(user_id, tree_id, connection=connection):
+        raise _forbidden()
+
+    raise _not_found("Tree not found")
+
+
 async def ensure_person_access(
     user_id: int,
     person_id: int,

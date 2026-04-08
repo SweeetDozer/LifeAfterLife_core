@@ -29,6 +29,15 @@ SELECT
 FROM users
 """
 
+TREE_ACCESS_SELECT = """
+SELECT
+    tree_access.user_id,
+    users.email,
+    tree_access.access_level::text AS access_level
+FROM tree_access
+JOIN users ON users.id = tree_access.user_id
+"""
+
 PERSON_SELECT = """
 SELECT
     id,
@@ -126,6 +135,43 @@ class CRUD:
         record = await db.pool.fetchrow(query, user_id)
         return self._record_to_dict(record)
 
+    async def upsert_tree_access(self, tree_id: int, user_id: int, access_level: str):
+        query = """
+        INSERT INTO tree_access (tree_id, user_id, access_level)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (tree_id, user_id)
+        DO UPDATE SET access_level = EXCLUDED.access_level
+        """
+        await db.pool.execute(query, tree_id, user_id, access_level)
+
+    async def delete_tree_access(self, tree_id: int, user_id: int):
+        query = """
+        DELETE FROM tree_access
+        WHERE tree_id = $1 AND user_id = $2
+        """
+        result = await db.pool.execute(query, tree_id, user_id)
+        return str(result).endswith("1")
+
+    async def get_tree_access_list(self, tree_id: int, owner: dict | None = None):
+        query = f"""
+        {TREE_ACCESS_SELECT}
+        WHERE tree_access.tree_id = $1
+        ORDER BY users.email
+        """
+        records = self._records_to_list(await db.pool.fetch(query, tree_id))
+        if owner and owner.get("owner_id"):
+            owner_user = await self.get_user_by_id(owner["owner_id"])
+            if owner_user:
+                records.insert(
+                    0,
+                    {
+                        "user_id": owner_user["id"],
+                        "email": owner_user["email"],
+                        "access_level": "owner",
+                    },
+                )
+        return records
+
     async def create_tree(
         self,
         owner_id: int,
@@ -148,6 +194,31 @@ class CRUD:
         """
         record = await executor.fetchrow(query, tree_id)
         return self._record_to_dict(record)
+
+    async def update_tree(
+        self,
+        tree_id: int,
+        name: str,
+        description: str | None,
+        is_public: bool,
+        connection=None,
+    ):
+        executor = self._executor(connection)
+        query = """
+        UPDATE family_trees
+        SET name = $2, description = $3, is_public = $4
+        WHERE id = $1
+        """
+        await executor.execute(query, tree_id, name, description, is_public)
+
+    async def delete_tree(self, tree_id: int, connection=None):
+        executor = self._executor(connection)
+        query = """
+        DELETE FROM family_trees
+        WHERE id = $1
+        """
+        result = await executor.execute(query, tree_id)
+        return str(result).endswith("1")
 
     async def get_user_trees(self, user_id: int):
         query = """
@@ -250,6 +321,55 @@ class CRUD:
             photo_url,
             description,
         )
+
+    async def update_person(
+        self,
+        person_id: int,
+        first_name: str,
+        middle_name: str | None = None,
+        last_name: str | None = None,
+        gender: str | None = None,
+        birth_date=None,
+        death_date=None,
+        description: str | None = None,
+        photo_url: str | None = None,
+        connection=None,
+    ):
+        executor = self._executor(connection)
+        query = """
+        UPDATE persons
+        SET
+            first_name = $2,
+            midle_name = $3,
+            last_name = $4,
+            gender = $5,
+            date_of_birth = $6,
+            date_of_death = $7,
+            photo_url = $8,
+            info_about_person = $9
+        WHERE id = $1
+        """
+        await executor.execute(
+            query,
+            person_id,
+            first_name,
+            middle_name,
+            last_name,
+            gender,
+            birth_date,
+            death_date,
+            photo_url,
+            description,
+        )
+
+    async def delete_person(self, person_id: int, connection=None):
+        executor = self._executor(connection)
+        query = """
+        DELETE FROM persons
+        WHERE id = $1
+        """
+        result = await executor.execute(query, person_id)
+        return str(result).endswith("1")
 
     async def get_person(self, person_id: int, connection=None):
         executor = self._executor(connection)
@@ -388,6 +508,24 @@ class CRUD:
                 second_person_id,
             )
         return self._records_to_list(records)
+
+    async def get_relationship(self, relationship_id: int, connection=None):
+        executor = self._executor(connection)
+        query = f"""
+        {RELATIONSHIP_SELECT}
+        WHERE id = $1
+        """
+        record = await executor.fetchrow(query, relationship_id)
+        return self._record_to_dict(record)
+
+    async def delete_relationship(self, relationship_id: int, connection=None):
+        executor = self._executor(connection)
+        query = """
+        DELETE FROM relationships
+        WHERE id = $1
+        """
+        result = await executor.execute(query, relationship_id)
+        return str(result).endswith("1")
 
 
 crud = CRUD()
