@@ -24,6 +24,22 @@ class RelationshipValidationError(RelationshipServiceError):
 class RelationshipService:
 
     @staticmethod
+    def _collect_relationship_ids_to_delete(
+        relationship: Mapping[str, object],
+        pair_relations,
+    ) -> set[int]:
+        relationship_id = int(relationship["id"])
+        relationship_type = str(relationship["relationship_type"])
+        relationship_ids_to_delete = {relationship_id}
+
+        if relationship_type in PEER_RELATIONSHIP_TYPES:
+            for pair_relation in pair_relations:
+                if pair_relation["relationship_type"] == relationship_type:
+                    relationship_ids_to_delete.add(pair_relation["id"])
+
+        return relationship_ids_to_delete
+
+    @staticmethod
     def _find_relation(relations, from_id, to_id, rel_type):
         for relation in relations:
             if (
@@ -315,25 +331,25 @@ class RelationshipService:
             tree_id=relationship["tree_id"],
             connection=connection,
         )
-        relationship_type = relationship["relationship_type"]
-        relationship_ids_to_delete = {relationship_id}
+        relationship_ids_to_delete = self._collect_relationship_ids_to_delete(
+            relationship,
+            pair_relations,
+        )
+        expected_deleted_count = len(relationship_ids_to_delete)
 
-        if relationship_type in PEER_RELATIONSHIP_TYPES:
-            for pair_relation in pair_relations:
-                if pair_relation["relationship_type"] == relationship_type:
-                    relationship_ids_to_delete.add(pair_relation["id"])
+        # Relationship deletion is code-controlled. For spouse/sibling/friend we
+        # delete every same-type row across the unordered pair in one statement,
+        # so no half-pair can survive the transaction. For parent we delete only
+        # the addressed directed edge.
+        deleted_count = await crud.delete_relationships(
+            sorted(relationship_ids_to_delete),
+            connection=connection,
+        )
 
-        deleted_count = 0
-        for current_relationship_id in relationship_ids_to_delete:
-            deleted = await crud.delete_relationship(
-                current_relationship_id,
-                connection=connection,
+        if deleted_count != expected_deleted_count:
+            raise RelationshipServiceError(
+                "Failed to delete relationship set consistently"
             )
-            if deleted:
-                deleted_count += 1
-
-        if deleted_count == 0:
-            raise RelationshipServiceError("Failed to delete relationship")
 
         return deleted_count
 

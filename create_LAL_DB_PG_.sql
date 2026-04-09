@@ -40,7 +40,8 @@ CREATE TABLE family_trees (
     is_public BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT
+    CONSTRAINT fk_family_trees_owner_user
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT
 );
 
 CREATE INDEX idx_family_trees_user_id ON family_trees (user_id);
@@ -70,7 +71,8 @@ CREATE TABLE persons (
         OR date_of_death >= date_of_birth
     ),
 
-    FOREIGN KEY (tree_id) REFERENCES family_trees(id) ON DELETE CASCADE
+    CONSTRAINT fk_persons_tree
+        FOREIGN KEY (tree_id) REFERENCES family_trees(id) ON DELETE CASCADE
 );
 
 CREATE INDEX idx_persons_tree_id ON persons (tree_id);
@@ -93,9 +95,12 @@ CREATE TABLE relationships (
 
     UNIQUE (from_person_id, to_person_id, relationship_type),
 
-    FOREIGN KEY (tree_id) REFERENCES family_trees(id) ON DELETE CASCADE,
-    FOREIGN KEY (tree_id, from_person_id) REFERENCES persons(tree_id, id) ON DELETE CASCADE,
-    FOREIGN KEY (tree_id, to_person_id) REFERENCES persons(tree_id, id) ON DELETE CASCADE
+    CONSTRAINT fk_relationships_tree
+        FOREIGN KEY (tree_id) REFERENCES family_trees(id) ON DELETE CASCADE,
+    CONSTRAINT fk_relationships_from_person
+        FOREIGN KEY (tree_id, from_person_id) REFERENCES persons(tree_id, id) ON DELETE CASCADE,
+    CONSTRAINT fk_relationships_to_person
+        FOREIGN KEY (tree_id, to_person_id) REFERENCES persons(tree_id, id) ON DELETE CASCADE
 );
 
 CREATE INDEX idx_relationships_tree_id ON relationships (tree_id);
@@ -114,8 +119,10 @@ CREATE TABLE tree_access (
 
     UNIQUE (tree_id, user_id),
 
-    FOREIGN KEY (tree_id) REFERENCES family_trees(id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    CONSTRAINT fk_tree_access_tree
+        FOREIGN KEY (tree_id) REFERENCES family_trees(id) ON DELETE CASCADE,
+    CONSTRAINT fk_tree_access_user
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
 CREATE INDEX idx_tree_access_tree_id ON tree_access (tree_id);

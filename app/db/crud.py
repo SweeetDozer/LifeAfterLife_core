@@ -184,14 +184,15 @@ class CRUD:
     ):
         if not owner_id:
             return False
-        return await self.delete_tree_access(tree_id, owner_id)
+        return await self.delete_tree_access(tree_id, owner_id, connection=connection)
 
-    async def delete_tree_access(self, tree_id: int, user_id: int):
+    async def delete_tree_access(self, tree_id: int, user_id: int, connection=None):
+        executor = self._executor(connection)
         query = """
         DELETE FROM tree_access
         WHERE tree_id = $1 AND user_id = $2
         """
-        result = await db.pool.execute(query, tree_id, user_id)
+        result = await executor.execute(query, tree_id, user_id)
         return str(result).endswith("1")
 
     async def get_tree_access_entry(self, tree_id: int, user_id: int, connection=None):
@@ -210,7 +211,13 @@ class CRUD:
             )
         return record
 
-    async def get_tree_access_list(self, tree_id: int, owner: dict | None = None):
+    async def get_tree_access_list(
+        self,
+        tree_id: int,
+        owner: dict | None = None,
+        connection=None,
+    ):
+        executor = self._executor(connection)
         query = f"""
         {TREE_ACCESS_SELECT}
         JOIN family_trees ON family_trees.id = tree_access.tree_id
@@ -218,7 +225,7 @@ class CRUD:
           AND family_trees.user_id <> tree_access.user_id
         ORDER BY users.email
         """
-        records = self._records_to_list(await db.pool.fetch(query, tree_id))
+        records = self._records_to_list(await executor.fetch(query, tree_id))
         for record in records:
             record["access_level"] = self._normalize_tree_access_level(
                 record.get("access_level")
@@ -499,6 +506,15 @@ class CRUD:
         records = await executor.fetch(query, person_id)
         return self._records_to_list(records)
 
+    async def count_person_relationships(self, person_id: int, connection=None):
+        executor = self._executor(connection)
+        query = """
+        SELECT COUNT(*)
+        FROM relationships
+        WHERE from_person_id = $1 OR to_person_id = $1
+        """
+        return int(await executor.fetchval(query, person_id) or 0)
+
     async def get_tree_relationships(self, tree_id: int, connection=None):
         executor = self._executor(connection)
         query = f"""
@@ -588,6 +604,18 @@ class CRUD:
         """
         result = await executor.execute(query, relationship_id)
         return str(result).endswith("1")
+
+    async def delete_relationships(self, relationship_ids: list[int], connection=None):
+        if not relationship_ids:
+            return 0
+
+        executor = self._executor(connection)
+        query = """
+        DELETE FROM relationships
+        WHERE id = ANY($1::int[])
+        """
+        result = await executor.execute(query, relationship_ids)
+        return int(str(result).split()[-1])
 
 
 crud = CRUD()

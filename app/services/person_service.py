@@ -86,7 +86,11 @@ class PersonService:
                     person_id,
                     connection=connection,
                 )
-                relationships = await crud.get_person_relationships(
+                # We only delete the person row in Python. Related relationship
+                # rows are removed by Postgres via FK ON DELETE CASCADE, so the
+                # API reports the number of dependent rows that the database is
+                # going to delete as part of the same transaction.
+                deleted_relationships = await crud.count_person_relationships(
                     person_id,
                     connection=connection,
                 )
@@ -96,8 +100,8 @@ class PersonService:
             raise PersonServiceError("Failed to delete person")
 
         return {
-            "detail": "Person deleted",
-            "deleted_relationships": len(relationships),
+            "detail": "Person deleted; related relationships removed by database cascade",
+            "deleted_relationships": deleted_relationships,
         }
 
 
