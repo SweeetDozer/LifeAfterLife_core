@@ -186,6 +186,121 @@ class GraphServiceTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_find_path_details_prefers_blood_path_over_equal_length_non_blood_path(self):
+        relations = [
+            {
+                "from_person_id": 1,
+                "to_person_id": 2,
+                "relationship_type": "spouse",
+            },
+            {
+                "from_person_id": 2,
+                "to_person_id": 5,
+                "relationship_type": "friend",
+            },
+            {
+                "from_person_id": 1,
+                "to_person_id": 3,
+                "relationship_type": "parent",
+            },
+            {
+                "from_person_id": 3,
+                "to_person_id": 5,
+                "relationship_type": "sibling",
+            },
+        ]
+
+        with patch("app.services.graph_service.crud") as crud_mock:
+            crud_mock.get_tree_relationships = AsyncMock(return_value=relations)
+
+            path_details = await self.service.find_path_details(
+                tree_id=10,
+                start_id=1,
+                end_id=5,
+            )
+
+        self.assertEqual(path_details["path"], [1, 3, 5])
+
+    async def test_find_path_details_prefers_fewer_mixed_edges_when_lengths_match(self):
+        relations = [
+            {
+                "from_person_id": 1,
+                "to_person_id": 2,
+                "relationship_type": "parent",
+            },
+            {
+                "from_person_id": 2,
+                "to_person_id": 6,
+                "relationship_type": "sibling",
+            },
+            {
+                "from_person_id": 1,
+                "to_person_id": 3,
+                "relationship_type": "parent",
+            },
+            {
+                "from_person_id": 1,
+                "to_person_id": 3,
+                "relationship_type": "friend",
+            },
+            {
+                "from_person_id": 3,
+                "to_person_id": 6,
+                "relationship_type": "sibling",
+            },
+        ]
+
+        with patch("app.services.graph_service.crud") as crud_mock:
+            crud_mock.get_tree_relationships = AsyncMock(return_value=relations)
+
+            path_details = await self.service.find_path_details(
+                tree_id=10,
+                start_id=1,
+                end_id=6,
+            )
+
+        self.assertEqual(path_details["path"], [1, 2, 6])
+
+    async def test_find_path_details_still_prefers_shorter_path_over_longer_bloodier_one(self):
+        relations = [
+            {
+                "from_person_id": 1,
+                "to_person_id": 2,
+                "relationship_type": "spouse",
+            },
+            {
+                "from_person_id": 2,
+                "to_person_id": 5,
+                "relationship_type": "friend",
+            },
+            {
+                "from_person_id": 1,
+                "to_person_id": 3,
+                "relationship_type": "parent",
+            },
+            {
+                "from_person_id": 3,
+                "to_person_id": 4,
+                "relationship_type": "sibling",
+            },
+            {
+                "from_person_id": 4,
+                "to_person_id": 5,
+                "relationship_type": "parent",
+            },
+        ]
+
+        with patch("app.services.graph_service.crud") as crud_mock:
+            crud_mock.get_tree_relationships = AsyncMock(return_value=relations)
+
+            path_details = await self.service.find_path_details(
+                tree_id=10,
+                start_id=1,
+                end_id=5,
+            )
+
+        self.assertEqual(path_details["path"], [1, 2, 5])
+
     async def test_get_ancestors_ignores_non_parent_edges(self):
         relations = [
             {

@@ -1,9 +1,35 @@
 from app.db.crud import crud
+from app.services.relationship_semantics import (
+    blood_relationship_types,
+    supported_relationship_types,
+)
 
 
 class KinshipService:
-    BLOOD_STEP_TYPES = frozenset({"parent", "child", "sibling"})
-    DIRECT_STEP_TYPES = frozenset({"parent", "child", "sibling", "spouse", "friend"})
+    BLOOD_STEP_TYPES = blood_relationship_types() | frozenset({"child"})
+    DIRECT_STEP_TYPES = supported_relationship_types() | frozenset({"child"})
+    DIRECT_RELATION_WORDS = {
+        "parent": ("отец", "мать"),
+        "child": ("сын", "дочь"),
+        "sibling": ("брат", "сестра"),
+        "spouse": ("муж", "жена"),
+        "friend": ("друг", "подруга"),
+    }
+    ANCESTOR_WORDS = {
+        1: ("отец", "мать"),
+        2: ("дед", "бабушка"),
+        3: ("прадед", "прабабушка"),
+    }
+    DESCENDANT_WORDS = {
+        1: ("сын", "дочь"),
+        2: ("внук", "внучка"),
+        3: ("правнук", "правнучка"),
+    }
+    COUSIN_WORDS = {
+        1: ("двоюродный", "двоюродная"),
+        2: ("троюродный", "троюродная"),
+        3: ("четвероюродный", "четвероюродная"),
+    }
 
     @staticmethod
     def _normalize_person_id(value):
@@ -291,13 +317,11 @@ class KinshipService:
         generation_diff = abs(up - down)
         return common_level, generation_diff
 
-    def cousin_level(self, level):
-        names = {
-            1: "двоюродный",
-            2: "троюродный",
-            3: "четвероюродный",
-        }
-        return names.get(level, "дальний")
+    def cousin_level(self, level, gender=None):
+        base = self.COUSIN_WORDS.get(level)
+        if base is None:
+            return None
+        return self.gender_word(base, gender)
 
     def gender_word(self, base, gender):
         if gender == "male":
@@ -306,59 +330,65 @@ class KinshipService:
             return base[1]
         return f"{base[0]}/{base[1]}"
 
+    def direct_relation_word(self, relation_type, gender):
+        base = self.DIRECT_RELATION_WORDS.get(relation_type)
+        if base is None:
+            return None
+        return self.gender_word(base, gender)
+
+    @staticmethod
+    def removed_word(diff):
+        if diff <= 0:
+            return ""
+        return f"в {diff}-м удалении"
+
+    @staticmethod
+    def generation_word(depth, subject):
+        return f"{subject} в {depth}-м поколении"
+
     def ancestor_word(self, depth, gender):
-        if depth == 1:
-            return self.gender_word(
-                (
-                    "отец",
-                    "мать",
-                ),
-                gender,
-            )
-        if depth == 2:
-            return self.gender_word(
-                (
-                    "дед",
-                    "бабушка",
-                ),
-                gender,
-            )
-        if depth == 3:
-            return self.gender_word(
-                (
-                    "прадед",
-                    "прабабушка",
-                ),
-                gender,
-            )
-        return f"предок в {depth}-м поколении"
+        base = self.ANCESTOR_WORDS.get(depth)
+        if base is not None:
+            return self.gender_word(base, gender)
+        return self.generation_word(depth, "предок")
 
     def descendant_word(self, depth, gender):
-        if depth == 1:
-            return self.gender_word(
+        base = self.DESCENDANT_WORDS.get(depth)
+        if base is not None:
+            return self.gender_word(base, gender)
+        return self.generation_word(depth, "потомок")
+
+    def cousin_relation_word(self, level, diff, gender):
+        cousin = self.cousin_level(level, gender)
+        if cousin is None:
+            relation = self.gender_word(
                 (
-                    "сын",
-                    "дочь",
+                    "родственник по боковой линии",
+                    "родственница по боковой линии",
                 ),
                 gender,
             )
-        if depth == 2:
-            return self.gender_word(
-                (
-                    "внук",
-                    "внучка",
-                ),
-                gender,
-            )
-        if depth == 3:
-            return self.gender_word(
-                (
-                    "правнук",
-                    "правнучка",
-                ),
-                gender,
-            )
-        return f"потомок в {depth}-м поколении"
+        else:
+            sibling = self.direct_relation_word("sibling", gender)
+            relation = f"{cousin} {sibling}"
+        removed = self.removed_word(diff)
+        if removed:
+            return f"{relation} {removed}"
+        return relation
+
+    def collateral_ancestor_word(self, up, gender):
+        if up == 2:
+            return self.gender_word(("дядя", "тётя"), gender)
+
+        branch = self.gender_word(("дяди", "тёти"), gender)
+        return self.generation_word(up - 2, f"предок {branch}")
+
+    def collateral_descendant_word(self, down, gender):
+        if down == 2:
+            return self.gender_word(("племянник", "племянница"), gender)
+
+        branch = self.gender_word(("племянника", "племянницы"), gender)
+        return self.generation_word(down - 2, f"потомок {branch}")
 
     def _describe_blood_relation(self, up, down, gender):
         if up > 0 and down == 0:
@@ -377,37 +407,21 @@ class KinshipService:
             )
 
         if up == 2 and down == 1:
-            return self.gender_word(
-                (
-                    "дядя",
-                    "тётя",
-                ),
-                gender,
-            )
+            return self.collateral_ancestor_word(up, gender)
 
         if up == 1 and down == 2:
-            return self.gender_word(
-                (
-                    "племянник",
-                    "племянница",
-                ),
-                gender,
-            )
+            return self.collateral_descendant_word(down, gender)
 
         common, diff = self.get_degree(up, down)
 
+        if common == 1:
+            if up > down:
+                return self.collateral_ancestor_word(up, gender)
+            if down > up:
+                return self.collateral_descendant_word(down, gender)
+
         if common >= 2:
-            cousin = self.cousin_level(common - 1)
-            sibling = self.gender_word(
-                (
-                    "брат",
-                    "сестра",
-                ),
-                gender,
-            )
-            if diff == 0:
-                return f"{cousin} {sibling}"
-            return f"{cousin} {sibling}, разница по поколениям: {diff}"
+            return self.cousin_relation_word(common - 1, diff, gender)
 
         return "сложное родство"
 
@@ -455,46 +469,10 @@ class KinshipService:
         gender = person["gender"] if person else None
 
         direct_type = analysis["direct_type"]
-        if direct_type == "parent":
-            return self.gender_word(
-                (
-                    "отец",
-                    "мать",
-                ),
-                gender,
-            )
-        if direct_type == "child":
-            return self.gender_word(
-                (
-                    "сын",
-                    "дочь",
-                ),
-                gender,
-            )
-        if direct_type == "sibling":
-            return self.gender_word(
-                (
-                    "брат",
-                    "сестра",
-                ),
-                gender,
-            )
-        if direct_type == "spouse":
-            return self.gender_word(
-                (
-                    "муж",
-                    "жена",
-                ),
-                gender,
-            )
-        if direct_type == "friend":
-            return self.gender_word(
-                (
-                    "друг",
-                    "подруга",
-                ),
-                gender,
-            )
+        if direct_type is not None:
+            direct_relation = self.direct_relation_word(direct_type, gender)
+            if direct_relation is not None:
+                return direct_relation
 
         up, down = analysis["lineage"]
         return self._describe_blood_relation(up, down, gender)

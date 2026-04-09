@@ -1,7 +1,13 @@
 from collections import defaultdict, deque
 from dataclasses import dataclass
+from heapq import heappop, heappush
 
 from app.db.crud import crud
+from app.services.relationship_semantics import (
+    blood_relationship_types,
+    get_relationship_definition,
+    relationship_priority,
+)
 
 
 @dataclass(frozen=True)
@@ -12,6 +18,7 @@ class _GraphState:
 
 
 class GraphService:
+    BLOOD_RELATIONSHIP_TYPES = blood_relationship_types()
 
     @staticmethod
     def _normalize_person_id(value):
@@ -79,26 +86,73 @@ class GraphService:
         relations = await crud.get_tree_relationships(tree_id, connection=connection)
         return self._build_graph_state(relations)
 
-    @staticmethod
-    def _find_path_node_ids(adjacency, start_id, end_id):
+    @classmethod
+    def _edge_tie_break_cost(cls, relationship_types, current_id, neighbor_id):
+        direct_types = relationship_types.get((current_id, neighbor_id), ())
+        reverse_types = relationship_types.get((neighbor_id, current_id), ())
+        edge_types = set(direct_types) | set(reverse_types)
+
+        has_blood = bool(edge_types & cls.BLOOD_RELATIONSHIP_TYPES)
+        has_non_blood = any(
+            (
+                definition is not None
+                and definition.nature != "biological"
+            )
+            for definition in (
+                get_relationship_definition(relationship_type)
+                for relationship_type in edge_types
+            )
+        )
+
+        pure_non_blood = int(has_non_blood and not has_blood)
+        mixed = int(has_blood and has_non_blood)
+        penalty = pure_non_blood * 2 + mixed
+        priority = min(
+            (relationship_priority(relationship_type) for relationship_type in edge_types),
+            default=999,
+        )
+
+        return pure_non_blood, mixed, penalty, priority
+
+    @classmethod
+    def _find_path_node_ids(cls, adjacency, relationship_types, start_id, end_id):
         if start_id == end_id:
             return [start_id]
 
-        queue = deque([start_id])
-        previous = {start_id: None}
+        start_key = (0, 0, 0, 0, (), (start_id,))
+        queue = [(start_key, start_id)]
+        best_keys = {start_id: start_key}
 
         while queue:
-            current = queue.popleft()
+            current_key, current = heappop(queue)
+            if current_key != best_keys.get(current):
+                continue
+            if current == end_id:
+                return list(current_key[-1])
+
+            distance, pure_non_blood, mixed, penalty, priority_path, path = current_key
 
             for neighbor in adjacency.get(current, ()):
-                if neighbor in previous:
+                edge_non_blood, edge_mixed, edge_penalty, edge_priority = (
+                    cls._edge_tie_break_cost(
+                        relationship_types,
+                        current,
+                        neighbor,
+                    )
+                )
+                candidate_key = (
+                    distance + 1,
+                    pure_non_blood + edge_non_blood,
+                    mixed + edge_mixed,
+                    penalty + edge_penalty,
+                    priority_path + ((edge_priority, neighbor),),
+                    path + (neighbor,),
+                )
+                if candidate_key >= best_keys.get(neighbor, (float("inf"),)):
                     continue
 
-                previous[neighbor] = current
-                if neighbor == end_id:
-                    return GraphService._reconstruct_path(previous, end_id)
-
-                queue.append(neighbor)
+                best_keys[neighbor] = candidate_key
+                heappush(queue, (candidate_key, neighbor))
 
         return None
 
@@ -169,10 +223,12 @@ class GraphService:
         state = await self._load_graph_state(tree_id, connection=connection)
 
         # Simplified model: every stored relationship counts as one hop.
-        # We keep the current "shortest path in the graph" idea, but this does
-        # not try to rank equally short paths by genealogical meaning.
+        # We keep the current "shortest path in the graph" idea, but break ties
+        # deterministically in favor of more genealogically meaningful paths:
+        # pure blood edges first, then mixed edges, then pure non-blood edges.
         path = self._find_path_node_ids(
             state.adjacency,
+            state.relationship_types,
             start_person_id,
             end_person_id,
         )

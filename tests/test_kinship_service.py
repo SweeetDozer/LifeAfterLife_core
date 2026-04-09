@@ -98,6 +98,48 @@ class KinshipServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(relations, [])
 
+    async def test_interpret_direct_parent(self):
+        relations = [{"type": "parent", "to": 10}]
+
+        with patch("app.services.kinship_service.crud") as crud_mock:
+            crud_mock.get_tree_person = AsyncMock(return_value={"gender": "male"})
+
+            result = await self.service.interpret(
+                tree_id=10,
+                relations=relations,
+                target_id=10,
+            )
+
+        self.assertEqual(result, "отец")
+
+    async def test_interpret_direct_child(self):
+        relations = [{"type": "child", "to": 20}]
+
+        with patch("app.services.kinship_service.crud") as crud_mock:
+            crud_mock.get_tree_person = AsyncMock(return_value={"gender": "female"})
+
+            result = await self.service.interpret(
+                tree_id=10,
+                relations=relations,
+                target_id=20,
+            )
+
+        self.assertEqual(result, "дочь")
+
+    async def test_interpret_direct_sibling(self):
+        relations = [{"type": "sibling", "to": 20}]
+
+        with patch("app.services.kinship_service.crud") as crud_mock:
+            crud_mock.get_tree_person = AsyncMock(return_value={"gender": "female"})
+
+            result = await self.service.interpret(
+                tree_id=10,
+                relations=relations,
+                target_id=20,
+            )
+
+        self.assertEqual(result, "сестра")
+
     async def test_interpret_parent_child_path_as_sibling(self):
         relations = [
             {"type": "parent", "to": 10},
@@ -166,6 +208,206 @@ class KinshipServiceTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result, "двоюродный брат")
+
+    async def test_interpret_second_cousin(self):
+        relations = [
+            {"type": "parent", "to": 10},
+            {"type": "parent", "to": 11},
+            {"type": "sibling", "to": 12},
+            {"type": "child", "to": 13},
+            {"type": "child", "to": 20},
+        ]
+
+        with patch("app.services.kinship_service.crud") as crud_mock:
+            crud_mock.get_tree_person = AsyncMock(return_value={"gender": "female"})
+
+            result = await self.service.interpret(
+                tree_id=10,
+                relations=relations,
+                target_id=20,
+            )
+
+        self.assertEqual(result, "троюродная сестра")
+
+    async def test_interpret_third_cousin(self):
+        relations = [
+            {"type": "parent", "to": 10},
+            {"type": "parent", "to": 11},
+            {"type": "parent", "to": 12},
+            {"type": "sibling", "to": 13},
+            {"type": "child", "to": 14},
+            {"type": "child", "to": 15},
+            {"type": "child", "to": 20},
+        ]
+
+        with patch("app.services.kinship_service.crud") as crud_mock:
+            crud_mock.get_tree_person = AsyncMock(return_value={"gender": "male"})
+
+            result = await self.service.interpret(
+                tree_id=10,
+                relations=relations,
+                target_id=20,
+            )
+
+        self.assertEqual(result, "четвероюродный брат")
+
+    async def test_interpret_distant_cousin_uses_consistent_collateral_label(self):
+        relations = [
+            {"type": "parent", "to": 10},
+            {"type": "parent", "to": 11},
+            {"type": "parent", "to": 12},
+            {"type": "parent", "to": 13},
+            {"type": "sibling", "to": 14},
+            {"type": "child", "to": 15},
+            {"type": "child", "to": 16},
+            {"type": "child", "to": 17},
+            {"type": "child", "to": 20},
+        ]
+
+        with patch("app.services.kinship_service.crud") as crud_mock:
+            crud_mock.get_tree_person = AsyncMock(return_value={"gender": "female"})
+
+            result = await self.service.interpret(
+                tree_id=10,
+                relations=relations,
+                target_id=20,
+            )
+
+        self.assertEqual(result, "родственница по боковой линии")
+
+    async def test_interpret_first_cousin_once_removed(self):
+        relations = [
+            {"type": "parent", "to": 10},
+            {"type": "parent", "to": 11},
+            {"type": "sibling", "to": 12},
+            {"type": "child", "to": 20},
+        ]
+
+        with patch("app.services.kinship_service.crud") as crud_mock:
+            crud_mock.get_tree_person = AsyncMock(return_value={"gender": "female"})
+
+            result = await self.service.interpret(
+                tree_id=10,
+                relations=relations,
+                target_id=20,
+            )
+
+        self.assertEqual(result, "двоюродная сестра в 1-м удалении")
+
+    async def test_interpret_first_cousin_twice_removed(self):
+        relations = [
+            {"type": "parent", "to": 10},
+            {"type": "parent", "to": 11},
+            {"type": "parent", "to": 12},
+            {"type": "sibling", "to": 13},
+            {"type": "child", "to": 20},
+        ]
+
+        with patch("app.services.kinship_service.crud") as crud_mock:
+            crud_mock.get_tree_person = AsyncMock(return_value={"gender": "male"})
+
+            result = await self.service.interpret(
+                tree_id=10,
+                relations=relations,
+                target_id=20,
+            )
+
+        self.assertEqual(result, "двоюродный брат в 2-м удалении")
+
+    async def test_interpret_second_cousin_once_removed(self):
+        relations = [
+            {"type": "parent", "to": 10},
+            {"type": "parent", "to": 11},
+            {"type": "parent", "to": 12},
+            {"type": "sibling", "to": 13},
+            {"type": "child", "to": 14},
+            {"type": "child", "to": 20},
+        ]
+
+        with patch("app.services.kinship_service.crud") as crud_mock:
+            crud_mock.get_tree_person = AsyncMock(return_value={"gender": "female"})
+
+            result = await self.service.interpret(
+                tree_id=10,
+                relations=relations,
+                target_id=20,
+            )
+
+        self.assertEqual(result, "троюродная сестра в 1-м удалении")
+
+    async def test_interpret_descendant_of_nephew_line(self):
+        relations = [
+            {"type": "sibling", "to": 10},
+            {"type": "child", "to": 11},
+            {"type": "child", "to": 20},
+        ]
+
+        with patch("app.services.kinship_service.crud") as crud_mock:
+            crud_mock.get_tree_person = AsyncMock(return_value={"gender": "male"})
+
+            result = await self.service.interpret(
+                tree_id=10,
+                relations=relations,
+                target_id=20,
+            )
+
+        self.assertEqual(result, "потомок племянника в 1-м поколении")
+
+    async def test_interpret_ancestor_of_aunt_line(self):
+        relations = [
+            {"type": "parent", "to": 10},
+            {"type": "parent", "to": 11},
+            {"type": "sibling", "to": 20},
+        ]
+
+        with patch("app.services.kinship_service.crud") as crud_mock:
+            crud_mock.get_tree_person = AsyncMock(return_value={"gender": "female"})
+
+            result = await self.service.interpret(
+                tree_id=10,
+                relations=relations,
+                target_id=20,
+            )
+
+        self.assertEqual(result, "предок тёти в 1-м поколении")
+
+    async def test_interpret_distant_ancestor(self):
+        relations = [
+            {"type": "parent", "to": 10},
+            {"type": "parent", "to": 11},
+            {"type": "parent", "to": 12},
+            {"type": "parent", "to": 20},
+        ]
+
+        with patch("app.services.kinship_service.crud") as crud_mock:
+            crud_mock.get_tree_person = AsyncMock(return_value={"gender": "female"})
+
+            result = await self.service.interpret(
+                tree_id=10,
+                relations=relations,
+                target_id=20,
+            )
+
+        self.assertEqual(result, "предок в 4-м поколении")
+
+    async def test_interpret_distant_descendant(self):
+        relations = [
+            {"type": "child", "to": 10},
+            {"type": "child", "to": 11},
+            {"type": "child", "to": 12},
+            {"type": "child", "to": 20},
+        ]
+
+        with patch("app.services.kinship_service.crud") as crud_mock:
+            crud_mock.get_tree_person = AsyncMock(return_value={"gender": "male"})
+
+            result = await self.service.interpret(
+                tree_id=10,
+                relations=relations,
+                target_id=20,
+            )
+
+        self.assertEqual(result, "потомок в 4-м поколении")
 
     async def test_interpret_marks_mixed_non_blood_path_as_complex(self):
         relations = [

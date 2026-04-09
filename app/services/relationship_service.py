@@ -1,16 +1,15 @@
 from collections.abc import Mapping
-from typing import Final
 
 from app.db.crud import crud
 from app.services.graph_service import graph_service
+from app.services.relationship_semantics import (
+    peer_relationship_types,
+    supported_relationship_types,
+)
 
 
-PEER_RELATIONSHIP_TYPES: Final[frozenset[str]] = frozenset(
-    {"spouse", "sibling", "friend"}
-)
-SUPPORTED_RELATIONSHIP_TYPES: Final[frozenset[str]] = (
-    PEER_RELATIONSHIP_TYPES | frozenset({"parent"})
-)
+PEER_RELATIONSHIP_TYPES = peer_relationship_types()
+SUPPORTED_RELATIONSHIP_TYPES = supported_relationship_types()
 
 
 class RelationshipServiceError(Exception):
