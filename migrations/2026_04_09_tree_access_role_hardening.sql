@@ -1,29 +1,32 @@
 BEGIN;
 
--- 1. Normalize legacy delegated access values before tightening the enum.
-UPDATE tree_access
-SET access_level = 'viewer'
-WHERE access_level::text = 'view';
-
-UPDATE tree_access
-SET access_level = 'editor'
-WHERE access_level::text = 'edit';
-
--- 2. Remove invalid owner duplicates from delegated access storage.
+-- 1. Remove invalid owner duplicates from delegated access storage.
 DELETE FROM tree_access
 USING family_trees
 WHERE family_trees.id = tree_access.tree_id
   AND family_trees.user_id = tree_access.user_id;
 
+-- 2. Move delegated access values through text so legacy enums like
+--    ('view', 'edit') and already-upgraded enums are both supported.
+ALTER TABLE tree_access
+    ALTER COLUMN access_level TYPE text
+    USING access_level::text;
+
+UPDATE tree_access
+SET access_level = 'viewer'
+WHERE access_level = 'view';
+
+UPDATE tree_access
+SET access_level = 'editor'
+WHERE access_level = 'edit';
+
 -- 3. Recreate enum so tree_access stores only delegated roles.
-ALTER TYPE access_level_type RENAME TO access_level_type_old;
+DROP TYPE IF EXISTS access_level_type;
 CREATE TYPE access_level_type AS ENUM ('viewer', 'editor');
 
 ALTER TABLE tree_access
     ALTER COLUMN access_level TYPE access_level_type
     USING access_level::text::access_level_type;
-
-DROP TYPE access_level_type_old;
 
 -- 4. Enforce that every tree has an explicit owner.
 ALTER TABLE family_trees
