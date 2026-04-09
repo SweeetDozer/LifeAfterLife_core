@@ -7,11 +7,28 @@ from app.services import permissions
 
 
 class PermissionsTests(unittest.IsolatedAsyncioTestCase):
+    def test_role_helpers_follow_owner_editor_viewer_rules(self):
+        self.assertTrue(permissions.can_view_tree("owner"))
+        self.assertTrue(permissions.can_view_tree("editor"))
+        self.assertTrue(permissions.can_view_tree("viewer"))
+        self.assertFalse(permissions.can_view_tree(None))
+
+        self.assertTrue(permissions.can_edit_tree("owner"))
+        self.assertTrue(permissions.can_edit_tree("editor"))
+        self.assertFalse(permissions.can_edit_tree("viewer"))
+
+        self.assertTrue(permissions.can_manage_tree_access("owner"))
+        self.assertFalse(permissions.can_manage_tree_access("editor"))
+        self.assertFalse(permissions.can_manage_tree_access("viewer"))
+
+        self.assertTrue(permissions.can_delete_tree("owner"))
+        self.assertFalse(permissions.can_delete_tree("editor"))
+        self.assertFalse(permissions.can_delete_tree("viewer"))
+
     async def test_ensure_tree_edit_access_returns_403_for_view_only_user(self):
         with patch("app.services.permissions.crud") as crud_mock:
             crud_mock.get_tree = AsyncMock(return_value={"id": 10, "owner_id": 1})
-            crud_mock.user_can_edit_tree = AsyncMock(return_value=False)
-            crud_mock.user_can_view_tree = AsyncMock(return_value=True)
+            crud_mock.get_tree_role = AsyncMock(return_value="viewer")
 
             with self.assertRaises(HTTPException) as context:
                 await permissions.ensure_tree_edit_access(user_id=7, tree_id=10)
@@ -22,14 +39,37 @@ class PermissionsTests(unittest.IsolatedAsyncioTestCase):
     async def test_ensure_tree_edit_access_returns_404_when_tree_is_hidden(self):
         with patch("app.services.permissions.crud") as crud_mock:
             crud_mock.get_tree = AsyncMock(return_value={"id": 10, "owner_id": 1})
-            crud_mock.user_can_edit_tree = AsyncMock(return_value=False)
-            crud_mock.user_can_view_tree = AsyncMock(return_value=False)
+            crud_mock.get_tree_role = AsyncMock(return_value=None)
 
             with self.assertRaises(HTTPException) as context:
                 await permissions.ensure_tree_edit_access(user_id=7, tree_id=10)
 
         self.assertEqual(context.exception.status_code, 404)
         self.assertEqual(context.exception.detail, "Tree not found")
+
+    async def test_ensure_tree_access_management_access_rejects_editor(self):
+        with patch("app.services.permissions.crud") as crud_mock:
+            crud_mock.get_tree = AsyncMock(return_value={"id": 10, "owner_id": 1})
+            crud_mock.get_tree_role = AsyncMock(return_value="editor")
+
+            with self.assertRaises(HTTPException) as context:
+                await permissions.ensure_tree_access_management_access(
+                    user_id=7,
+                    tree_id=10,
+                )
+
+        self.assertEqual(context.exception.status_code, 403)
+        self.assertEqual(context.exception.detail, "Access denied")
+
+    async def test_ensure_tree_delete_access_allows_owner(self):
+        tree = {"id": 10, "owner_id": 7}
+        with patch("app.services.permissions.crud") as crud_mock:
+            crud_mock.get_tree = AsyncMock(return_value=tree)
+            crud_mock.get_tree_role = AsyncMock(return_value="owner")
+
+            result = await permissions.ensure_tree_delete_access(user_id=7, tree_id=10)
+
+        self.assertEqual(result, tree)
 
     async def test_ensure_person_access_masks_tree_404_as_person_404(self):
         with (

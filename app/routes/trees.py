@@ -9,6 +9,8 @@ from app.models.tree import (
     TreeAccessGrantResponse,
     TreeAccessRead,
     TreeAccessRevokeResponse,
+    TreeAccessUpdateRequest,
+    TreeAccessUpdateResponse,
     TreeCreate,
     TreeCreateResponse,
     TreeDeleteResponse,
@@ -68,6 +70,21 @@ async def grant_tree_access(
         user_id,
         tree_id,
         payload.email,
+        payload.access_level,
+    )
+
+
+@router.patch("/{tree_id}/access/{target_user_id}", response_model=TreeAccessUpdateResponse)
+async def update_tree_access(
+    tree_id: TreeIdPath,
+    target_user_id: UserIdPath,
+    payload: TreeAccessUpdateRequest,
+    user_id: int = Depends(get_current_user_id),
+):
+    return await tree_access_service.update_access(
+        user_id,
+        tree_id,
+        target_user_id,
         payload.access_level,
     )
 

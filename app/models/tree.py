@@ -74,7 +74,18 @@ class TreeAccessGrantRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     email: str
-    access_level: Literal["view", "edit"]
+    access_level: Literal["viewer", "editor"]
+
+    @field_validator("access_level", mode="before")
+    @classmethod
+    def normalize_access_level(cls, value):
+        legacy_mapping = {
+            "view": "viewer",
+            "edit": "editor",
+        }
+        if isinstance(value, str):
+            return legacy_mapping.get(value, value)
+        return value
 
 
 class TreeAccessRead(BaseModel):
@@ -82,14 +93,38 @@ class TreeAccessRead(BaseModel):
 
     user_id: PositiveInt
     email: str
-    access_level: Literal["owner", "view", "edit"]
+    access_level: Literal["owner", "editor", "viewer"]
 
 
 class TreeAccessGrantResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     user_id: PositiveInt
-    access_level: Literal["view", "edit"]
+    access_level: Literal["viewer", "editor"]
+
+
+class TreeAccessUpdateRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    access_level: Literal["viewer", "editor"]
+
+    @field_validator("access_level", mode="before")
+    @classmethod
+    def normalize_access_level(cls, value):
+        legacy_mapping = {
+            "view": "viewer",
+            "edit": "editor",
+        }
+        if isinstance(value, str):
+            return legacy_mapping.get(value, value)
+        return value
+
+
+class TreeAccessUpdateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: PositiveInt
+    access_level: Literal["viewer", "editor"]
 
 
 class TreeAccessRevokeResponse(BaseModel):
@@ -102,7 +137,7 @@ class TreeRead(TreeBase):
     id: PositiveInt
     owner_id: PositiveInt | None = None
     created_at: datetime
-    access_level: Literal["owner", "view", "edit"]
+    access_level: Literal["owner", "editor", "viewer"]
 
 
 class TreeDeleteResponse(BaseModel):

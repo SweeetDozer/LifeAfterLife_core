@@ -7,6 +7,8 @@ from app.db.crud import crud
 
 
 AccessMode = Literal["view", "edit"]
+TreeAction = Literal["view", "edit", "manage_access", "delete"]
+TreeRole = Literal["owner", "editor", "viewer"]
 
 
 def _not_found(detail: str) -> HTTPException:
@@ -30,6 +32,60 @@ def _deduplicate_ids(person_ids: Sequence[int]) -> list[int]:
     return unique_ids
 
 
+def can_view_tree(role: TreeRole | None) -> bool:
+    return role in {"owner", "editor", "viewer"}
+
+
+def can_edit_tree(role: TreeRole | None) -> bool:
+    return role in {"owner", "editor"}
+
+
+def can_manage_tree_access(role: TreeRole | None) -> bool:
+    return role == "owner"
+
+
+def can_delete_tree(role: TreeRole | None) -> bool:
+    return role == "owner"
+
+
+def _is_action_allowed(role: TreeRole | None, action: TreeAction) -> bool:
+    if action == "view":
+        return can_view_tree(role)
+    if action == "edit":
+        return can_edit_tree(role)
+    if action == "manage_access":
+        return can_manage_tree_access(role)
+    if action == "delete":
+        return can_delete_tree(role)
+    raise ValueError(f"Unsupported tree action: {action}")
+
+
+async def get_tree_role(user_id: int, tree_id: int, connection=None) -> TreeRole | None:
+    role = await crud.get_tree_role(user_id, tree_id, connection=connection)
+    return role
+
+
+async def ensure_tree_permission(
+    user_id: int,
+    tree_id: int,
+    *,
+    action: TreeAction,
+    connection=None,
+):
+    tree = await crud.get_tree(tree_id, connection=connection)
+    if not tree:
+        raise _not_found("Tree not found")
+
+    role = await get_tree_role(user_id, tree_id, connection=connection)
+    if _is_action_allowed(role, action):
+        return tree
+
+    if role is not None:
+        raise _forbidden()
+
+    raise _not_found("Tree not found")
+
+
 async def ensure_tree_access(
     user_id: int,
     tree_id: int,
@@ -37,25 +93,14 @@ async def ensure_tree_access(
     access: AccessMode = "view",
     connection=None,
 ):
-    tree = await crud.get_tree(tree_id, connection=connection)
-    if not tree:
-        raise _not_found("Tree not found")
-
-    if access == "view":
-        if not await crud.user_can_view_tree(user_id, tree_id, connection=connection):
-            raise _not_found("Tree not found")
-        return tree
-
-    if access != "edit":
+    if access not in {"view", "edit"}:
         raise ValueError(f"Unsupported access mode: {access}")
-
-    if await crud.user_can_edit_tree(user_id, tree_id, connection=connection):
-        return tree
-
-    if await crud.user_can_view_tree(user_id, tree_id, connection=connection):
-        raise _forbidden()
-
-    raise _not_found("Tree not found")
+    return await ensure_tree_permission(
+        user_id,
+        tree_id,
+        action=access,
+        connection=connection,
+    )
 
 
 async def ensure_tree_view_access(user_id: int, tree_id: int, connection=None):
@@ -77,17 +122,30 @@ async def ensure_tree_edit_access(user_id: int, tree_id: int, connection=None):
 
 
 async def ensure_tree_owner_access(user_id: int, tree_id: int, connection=None):
-    tree = await crud.get_tree(tree_id, connection=connection)
-    if not tree:
-        raise _not_found("Tree not found")
+    return await ensure_tree_permission(
+        user_id,
+        tree_id,
+        action="manage_access",
+        connection=connection,
+    )
 
-    if tree.get("owner_id") == user_id:
-        return tree
 
-    if await crud.user_can_view_tree(user_id, tree_id, connection=connection):
-        raise _forbidden()
+async def ensure_tree_access_management_access(user_id: int, tree_id: int, connection=None):
+    return await ensure_tree_permission(
+        user_id,
+        tree_id,
+        action="manage_access",
+        connection=connection,
+    )
 
-    raise _not_found("Tree not found")
+
+async def ensure_tree_delete_access(user_id: int, tree_id: int, connection=None):
+    return await ensure_tree_permission(
+        user_id,
+        tree_id,
+        action="delete",
+        connection=connection,
+    )
 
 
 async def ensure_person_access(

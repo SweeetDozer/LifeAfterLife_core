@@ -133,6 +133,11 @@ class _InMemoryConnection:
             tree = self.state.trees.get(args[0])
             return _Record(tree.copy()) if tree else None
 
+        if "FROM tree_access" in query and "JOIN users" in query:
+            tree_id, user_id = args
+            entry = self.state.get_tree_access_entry(tree_id, user_id)
+            return _Record(entry.copy()) if entry else None
+
         if "FROM persons" in query and "WHERE tree_id = $1 AND id = $2" in query:
             tree_id, person_id = args
             person = self.state.persons.get(person_id)
@@ -159,13 +164,9 @@ class _InMemoryConnection:
             owner_id, name, description, is_public = args
             return self.state.create_tree(owner_id, name, description, is_public)
 
-        if "SELECT EXISTS" in query and "family_trees.is_public = TRUE" in query:
+        if "CASE" in query and "WHEN family_trees.user_id = $1 THEN 'owner'" in query:
             user_id, tree_id = args
-            return self.state.user_can_view_tree(user_id, tree_id)
-
-        if "SELECT EXISTS" in query and "tree_access.access_level = 'edit'" in query:
-            user_id, tree_id = args
-            return self.state.user_can_edit_tree(user_id, tree_id)
+            return self.state.get_tree_role(user_id, tree_id)
 
         if "INSERT INTO persons" in query:
             (
@@ -374,31 +375,25 @@ class _InMemoryState:
 
         return result
 
-    def user_can_view_tree(self, user_id: int, tree_id: int) -> bool:
+    def get_tree_role(self, user_id: int, tree_id: int) -> str | None:
         tree = self.trees.get(tree_id)
-        access_entry = self.tree_access.get((tree_id, user_id))
-        return bool(
-            tree
-            and (
-                tree["owner_id"] == user_id
-                or tree["is_public"]
-                or access_entry is not None
-            )
-        )
+        if not tree:
+            return None
 
-    def user_can_edit_tree(self, user_id: int, tree_id: int) -> bool:
-        tree = self.trees.get(tree_id)
+        if tree["owner_id"] == user_id:
+            return "owner"
+
         access_entry = self.tree_access.get((tree_id, user_id))
-        return bool(
-            tree
-            and (
-                tree["owner_id"] == user_id
-                or (
-                    access_entry is not None
-                    and access_entry["access_level"] == "edit"
-                )
-            )
-        )
+        if access_entry is not None:
+            return {
+                "view": "viewer",
+                "edit": "editor",
+            }.get(access_entry["access_level"], access_entry["access_level"])
+
+        if tree["is_public"]:
+            return "viewer"
+
+        return None
 
     def upsert_tree_access(self, tree_id: int, user_id: int, access_level: str):
         self.tree_access[(tree_id, user_id)] = {
@@ -412,8 +407,12 @@ class _InMemoryState:
 
     def get_tree_access_list(self, tree_id: int) -> list[dict[str, Any]]:
         entries = []
+        tree = self.trees.get(tree_id)
+        owner_id = tree["owner_id"] if tree else None
         for (entry_tree_id, user_id), entry in self.tree_access.items():
             if entry_tree_id != tree_id:
+                continue
+            if owner_id == user_id:
                 continue
             user = self.users.get(user_id)
             if not user:
@@ -427,6 +426,25 @@ class _InMemoryState:
             )
         entries.sort(key=lambda item: item["email"])
         return entries
+
+    def get_tree_access_entry(self, tree_id: int, user_id: int) -> dict[str, Any] | None:
+        tree = self.trees.get(tree_id)
+        if tree and tree["owner_id"] == user_id:
+            return None
+        entry = self.tree_access.get((tree_id, user_id))
+        if not entry:
+            return None
+        user = self.users.get(user_id)
+        if not user:
+            return None
+        return {
+            "user_id": user_id,
+            "email": user["email"],
+            "access_level": {
+                "view": "viewer",
+                "edit": "editor",
+            }.get(entry["access_level"], entry["access_level"]),
+        }
 
     def create_person(
         self,
@@ -785,6 +803,57 @@ class ApiIntegrationTests(unittest.TestCase):
         token = login_response.json()["access_token"]
         return {"Authorization": f"Bearer {token}"}
 
+    def _create_tree(
+        self,
+        headers: dict[str, str],
+        *,
+        name: str = "Private tree",
+        description: str | None = None,
+        is_public: bool = False,
+    ) -> int:
+        response = self.client.post(
+            "/trees/",
+            json={
+                "name": name,
+                "description": description,
+                "is_public": is_public,
+            },
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        return response.json()["tree_id"]
+
+    def _create_person(
+        self,
+        headers: dict[str, str],
+        *,
+        tree_id: int,
+        first_name: str = "Anna",
+    ) -> int:
+        response = self.client.post(
+            "/persons/",
+            json={"tree_id": tree_id, "first_name": first_name},
+            headers=headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        return response.json()["person_id"]
+
+    def _grant_tree_access(
+        self,
+        owner_headers: dict[str, str],
+        *,
+        tree_id: int,
+        email: str,
+        access_level: str,
+    ):
+        response = self.client.post(
+            f"/trees/{tree_id}/access",
+            json={"email": email, "access_level": access_level},
+            headers=owner_headers,
+        )
+        self.assertEqual(response.status_code, 200)
+        return response
+
     def test_register_and_login_happy_path(self):
         register_response = self._register_user()
         self.assertEqual(register_response.status_code, 200)
@@ -956,6 +1025,206 @@ class ApiIntegrationTests(unittest.TestCase):
             "http://localhost:5173",
         )
 
+    def test_role_based_access_owner_editor_viewer_and_outsider(self):
+        owner_headers = self._auth_headers(email="owner@example.com")
+        editor_headers = self._auth_headers(email="editor@example.com")
+        viewer_headers = self._auth_headers(email="viewer@example.com")
+        outsider_headers = self._auth_headers(email="outsider@example.com")
+
+        tree_id = self._create_tree(
+            owner_headers,
+            name="Shared private tree",
+            description="Initial",
+        )
+        person_id = self._create_person(
+            owner_headers,
+            tree_id=tree_id,
+            first_name="Root",
+        )
+        self._grant_tree_access(
+            owner_headers,
+            tree_id=tree_id,
+            email="editor@example.com",
+            access_level="editor",
+        )
+        self._grant_tree_access(
+            owner_headers,
+            tree_id=tree_id,
+            email="viewer@example.com",
+            access_level="viewer",
+        )
+
+        owner_view_response = self.client.get(
+            f"/persons/tree/{tree_id}",
+            headers=owner_headers,
+        )
+        self.assertEqual(owner_view_response.status_code, 200)
+        self.assertEqual(owner_view_response.json()[0]["id"], person_id)
+
+        owner_edit_response = self.client.request(
+            "PATCH",
+            f"/trees/{tree_id}",
+            headers=[*owner_headers.items(), ("content-type", "application/json")],
+            body=json.dumps({"description": "Owner updated"}).encode("utf-8"),
+        )
+        self.assertEqual(owner_edit_response.status_code, 200)
+        self.assertEqual(owner_edit_response.json()["access_level"], "owner")
+
+        owner_access_response = self.client.get(
+            f"/trees/{tree_id}/access",
+            headers=owner_headers,
+        )
+        self.assertEqual(owner_access_response.status_code, 200)
+        self.assertEqual(len(owner_access_response.json()), 3)
+
+        editor_view_response = self.client.get(
+            f"/persons/tree/{tree_id}",
+            headers=editor_headers,
+        )
+        self.assertEqual(editor_view_response.status_code, 200)
+
+        editor_edit_response = self.client.request(
+            "PATCH",
+            f"/trees/{tree_id}",
+            headers=[*editor_headers.items(), ("content-type", "application/json")],
+            body=json.dumps({"description": "Editor updated"}).encode("utf-8"),
+        )
+        self.assertEqual(editor_edit_response.status_code, 200)
+        self.assertEqual(editor_edit_response.json()["access_level"], "editor")
+
+        editor_access_list_response = self.client.get(
+            f"/trees/{tree_id}/access",
+            headers=editor_headers,
+        )
+        self.assertEqual(editor_access_list_response.status_code, 403)
+
+        editor_self_promote_response = self.client.request(
+            "PATCH",
+            f"/trees/{tree_id}/access/2",
+            headers=[*editor_headers.items(), ("content-type", "application/json")],
+            body=json.dumps({"access_level": "viewer"}).encode("utf-8"),
+        )
+        self.assertEqual(editor_self_promote_response.status_code, 403)
+
+        viewer_view_response = self.client.get(
+            f"/persons/tree/{tree_id}",
+            headers=viewer_headers,
+        )
+        self.assertEqual(viewer_view_response.status_code, 200)
+
+        viewer_edit_response = self.client.request(
+            "PATCH",
+            f"/trees/{tree_id}",
+            headers=[*viewer_headers.items(), ("content-type", "application/json")],
+            body=json.dumps({"description": "Viewer updated"}).encode("utf-8"),
+        )
+        self.assertEqual(viewer_edit_response.status_code, 403)
+        self.assertEqual(viewer_edit_response.json(), {"detail": "Access denied"})
+
+        viewer_create_person_response = self.client.post(
+            "/persons/",
+            json={"tree_id": tree_id, "first_name": "Viewer child"},
+            headers=viewer_headers,
+        )
+        self.assertEqual(viewer_create_person_response.status_code, 403)
+        self.assertEqual(
+            viewer_create_person_response.json(),
+            {"detail": "Access denied"},
+        )
+
+        viewer_self_promote_response = self.client.request(
+            "PATCH",
+            f"/trees/{tree_id}/access/3",
+            headers=[*viewer_headers.items(), ("content-type", "application/json")],
+            body=json.dumps({"access_level": "editor"}).encode("utf-8"),
+        )
+        self.assertEqual(viewer_self_promote_response.status_code, 403)
+
+        outsider_view_response = self.client.get(
+            f"/persons/tree/{tree_id}",
+            headers=outsider_headers,
+        )
+        self.assertEqual(outsider_view_response.status_code, 404)
+        self.assertEqual(outsider_view_response.json(), {"detail": "Tree not found"})
+
+        outsider_edit_response = self.client.request(
+            "PATCH",
+            f"/trees/{tree_id}",
+            headers=[*outsider_headers.items(), ("content-type", "application/json")],
+            body=json.dumps({"description": "Outsider updated"}).encode("utf-8"),
+        )
+        self.assertEqual(outsider_edit_response.status_code, 404)
+        self.assertEqual(outsider_edit_response.json(), {"detail": "Tree not found"})
+
+        outsider_access_response = self.client.get(
+            f"/trees/{tree_id}/access",
+            headers=outsider_headers,
+        )
+        self.assertEqual(outsider_access_response.status_code, 404)
+        self.assertEqual(outsider_access_response.json(), {"detail": "Tree not found"})
+
+        outsider_list_trees_response = self.client.get("/trees/", headers=outsider_headers)
+        self.assertEqual(outsider_list_trees_response.status_code, 200)
+        self.assertEqual(outsider_list_trees_response.json(), [])
+
+    def test_owner_access_invariants_and_invalid_role_validation(self):
+        owner_headers = self._auth_headers(email="owner@example.com")
+        viewer_headers = self._auth_headers(email="viewer@example.com")
+
+        tree_id = self._create_tree(owner_headers, name="Invariant tree")
+        self._grant_tree_access(
+            owner_headers,
+            tree_id=tree_id,
+            email="viewer@example.com",
+            access_level="viewer",
+        )
+
+        revoke_owner_response = self.client.request(
+            "DELETE",
+            f"/trees/{tree_id}/access/1",
+            headers=list(owner_headers.items()),
+        )
+        self.assertEqual(revoke_owner_response.status_code, 400)
+        self.assertEqual(
+            revoke_owner_response.json(),
+            {"detail": "Cannot revoke owner access"},
+        )
+
+        demote_owner_response = self.client.request(
+            "PATCH",
+            f"/trees/{tree_id}/access/1",
+            headers=[*owner_headers.items(), ("content-type", "application/json")],
+            body=json.dumps({"access_level": "viewer"}).encode("utf-8"),
+        )
+        self.assertEqual(demote_owner_response.status_code, 400)
+        self.assertEqual(
+            demote_owner_response.json(),
+            {"detail": "Cannot change owner access"},
+        )
+
+        viewer_grant_response = self.client.post(
+            f"/trees/{tree_id}/access",
+            json={"email": "viewer@example.com", "access_level": "editor"},
+            headers=viewer_headers,
+        )
+        self.assertEqual(viewer_grant_response.status_code, 403)
+        self.assertEqual(viewer_grant_response.json(), {"detail": "Access denied"})
+
+        invalid_grant_role_response = self.client.post(
+            f"/trees/{tree_id}/access",
+            json={"email": "viewer@example.com", "access_level": "admin"},
+            headers=owner_headers,
+        )
+        self.assertEqual(invalid_grant_role_response.status_code, 422)
+
+        invalid_patch_role_response = self.client.request(
+            "PATCH",
+            f"/trees/{tree_id}/access/2",
+            headers=[*owner_headers.items(), ("content-type", "application/json")],
+            body=json.dumps({"access_level": ""}).encode("utf-8"),
+        )
+        self.assertEqual(invalid_patch_role_response.status_code, 422)
+
     def test_tree_access_owner_can_grant_list_and_revoke(self):
         owner_headers = self._auth_headers(email="owner@example.com")
         self._register_user(email="viewer@example.com")
@@ -969,13 +1238,13 @@ class ApiIntegrationTests(unittest.TestCase):
 
         grant_response = self.client.post(
             f"/trees/{tree_id}/access",
-            json={"email": "viewer@example.com", "access_level": "view"},
+            json={"email": "viewer@example.com", "access_level": "viewer"},
             headers=owner_headers,
         )
         self.assertEqual(grant_response.status_code, 200)
         self.assertEqual(
             grant_response.json(),
-            {"user_id": 2, "access_level": "view"},
+            {"user_id": 2, "access_level": "viewer"},
         )
 
         list_response = self.client.get(f"/trees/{tree_id}/access", headers=owner_headers)
@@ -991,7 +1260,7 @@ class ApiIntegrationTests(unittest.TestCase):
                 {
                     "user_id": 2,
                     "email": "viewer@example.com",
-                    "access_level": "view",
+                    "access_level": "viewer",
                 },
             ],
         )
@@ -1019,6 +1288,51 @@ class ApiIntegrationTests(unittest.TestCase):
             ],
         )
 
+    def test_tree_access_owner_can_update_existing_role(self):
+        owner_headers = self._auth_headers(email="owner@example.com")
+        self._register_user(email="viewer@example.com")
+
+        tree_id = self.client.post(
+            "/trees/",
+            json={"name": "Shared tree", "description": None, "is_public": False},
+            headers=owner_headers,
+        ).json()["tree_id"]
+
+        self.client.post(
+            f"/trees/{tree_id}/access",
+            json={"email": "viewer@example.com", "access_level": "viewer"},
+            headers=owner_headers,
+        )
+
+        update_response = self.client.request(
+            "PATCH",
+            f"/trees/{tree_id}/access/2",
+            headers=[*owner_headers.items(), ("content-type", "application/json")],
+            body=json.dumps({"access_level": "editor"}).encode("utf-8"),
+        )
+        self.assertEqual(update_response.status_code, 200)
+        self.assertEqual(
+            update_response.json(),
+            {"user_id": 2, "access_level": "editor"},
+        )
+
+        list_response = self.client.get(f"/trees/{tree_id}/access", headers=owner_headers)
+        self.assertEqual(
+            list_response.json(),
+            [
+                {
+                    "user_id": 1,
+                    "email": "owner@example.com",
+                    "access_level": "owner",
+                },
+                {
+                    "user_id": 2,
+                    "email": "viewer@example.com",
+                    "access_level": "editor",
+                },
+            ],
+        )
+
     def test_tree_access_non_owner_cannot_manage_access(self):
         owner_headers = self._auth_headers(email="owner@example.com")
         viewer_headers = self._auth_headers(email="viewer@example.com")
@@ -1032,14 +1346,14 @@ class ApiIntegrationTests(unittest.TestCase):
 
         owner_grant_response = self.client.post(
             f"/trees/{tree_id}/access",
-            json={"email": "viewer@example.com", "access_level": "view"},
+            json={"email": "viewer@example.com", "access_level": "viewer"},
             headers=owner_headers,
         )
         self.assertEqual(owner_grant_response.status_code, 200)
 
         forbidden_grant_response = self.client.post(
             f"/trees/{tree_id}/access",
-            json={"email": "owner@example.com", "access_level": "view"},
+            json={"email": "owner@example.com", "access_level": "viewer"},
             headers=viewer_headers,
         )
         self.assertEqual(forbidden_grant_response.status_code, 403)
@@ -1052,8 +1366,47 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(forbidden_list_response.status_code, 403)
         self.assertEqual(forbidden_list_response.json(), {"detail": "Access denied"})
 
-    def test_tree_access_rejects_owner_grant_and_missing_entry_revoke(self):
+        forbidden_update_response = self.client.request(
+            "PATCH",
+            f"/trees/{tree_id}/access/2",
+            headers=[*viewer_headers.items(), ("content-type", "application/json")],
+            body=json.dumps({"access_level": "editor"}).encode("utf-8"),
+        )
+        self.assertEqual(forbidden_update_response.status_code, 403)
+        self.assertEqual(forbidden_update_response.json(), {"detail": "Access denied"})
+
+        forbidden_revoke_response = self.client.request(
+            "DELETE",
+            f"/trees/{tree_id}/access/2",
+            headers=list(viewer_headers.items()),
+        )
+        self.assertEqual(forbidden_revoke_response.status_code, 403)
+        self.assertEqual(forbidden_revoke_response.json(), {"detail": "Access denied"})
+
+    def test_tree_access_accepts_legacy_access_level_aliases(self):
         owner_headers = self._auth_headers(email="owner@example.com")
+        self._register_user(email="viewer@example.com")
+
+        tree_id = self.client.post(
+            "/trees/",
+            json={"name": "Shared tree", "description": None, "is_public": False},
+            headers=owner_headers,
+        ).json()["tree_id"]
+
+        grant_response = self.client.post(
+            f"/trees/{tree_id}/access",
+            json={"email": "viewer@example.com", "access_level": "view"},
+            headers=owner_headers,
+        )
+        self.assertEqual(grant_response.status_code, 200)
+        self.assertEqual(
+            grant_response.json(),
+            {"user_id": 2, "access_level": "viewer"},
+        )
+
+    def test_tree_access_rejects_owner_grant_duplicate_grant_and_invalid_updates(self):
+        owner_headers = self._auth_headers(email="owner@example.com")
+        self._register_user(email="viewer@example.com")
 
         tree_response = self.client.post(
             "/trees/",
@@ -1064,13 +1417,55 @@ class ApiIntegrationTests(unittest.TestCase):
 
         owner_grant_response = self.client.post(
             f"/trees/{tree_id}/access",
-            json={"email": "owner@example.com", "access_level": "edit"},
+            json={"email": "owner@example.com", "access_level": "editor"},
             headers=owner_headers,
         )
         self.assertEqual(owner_grant_response.status_code, 400)
         self.assertEqual(
             owner_grant_response.json(),
             {"detail": "Owner already has full access"},
+        )
+
+        grant_response = self.client.post(
+            f"/trees/{tree_id}/access",
+            json={"email": "viewer@example.com", "access_level": "viewer"},
+            headers=owner_headers,
+        )
+        self.assertEqual(grant_response.status_code, 200)
+
+        duplicate_grant_response = self.client.post(
+            f"/trees/{tree_id}/access",
+            json={"email": "viewer@example.com", "access_level": "editor"},
+            headers=owner_headers,
+        )
+        self.assertEqual(duplicate_grant_response.status_code, 409)
+        self.assertEqual(
+            duplicate_grant_response.json(),
+            {"detail": "Access entry already exists"},
+        )
+
+        update_owner_response = self.client.request(
+            "PATCH",
+            f"/trees/{tree_id}/access/1",
+            headers=[*owner_headers.items(), ("content-type", "application/json")],
+            body=json.dumps({"access_level": "viewer"}).encode("utf-8"),
+        )
+        self.assertEqual(update_owner_response.status_code, 400)
+        self.assertEqual(
+            update_owner_response.json(),
+            {"detail": "Cannot change owner access"},
+        )
+
+        update_missing_response = self.client.request(
+            "PATCH",
+            f"/trees/{tree_id}/access/999",
+            headers=[*owner_headers.items(), ("content-type", "application/json")],
+            body=json.dumps({"access_level": "viewer"}).encode("utf-8"),
+        )
+        self.assertEqual(update_missing_response.status_code, 404)
+        self.assertEqual(
+            update_missing_response.json(),
+            {"detail": "Access entry not found"},
         )
 
         revoke_missing_response = self.client.request(
@@ -1083,6 +1478,42 @@ class ApiIntegrationTests(unittest.TestCase):
             revoke_missing_response.json(),
             {"detail": "Access entry not found"},
         )
+
+        revoke_owner_response = self.client.request(
+            "DELETE",
+            f"/trees/{tree_id}/access/1",
+            headers=list(owner_headers.items()),
+        )
+        self.assertEqual(revoke_owner_response.status_code, 400)
+        self.assertEqual(
+            revoke_owner_response.json(),
+            {"detail": "Cannot revoke owner access"},
+        )
+
+    def test_tree_access_owner_source_of_truth_is_family_tree_owner_id(self):
+        owner_headers = self._auth_headers(email="owner@example.com")
+
+        tree_id = self.client.post(
+            "/trees/",
+            json={"name": "Owner tree", "description": None, "is_public": False},
+            headers=owner_headers,
+        ).json()["tree_id"]
+
+        self.state.upsert_tree_access(tree_id, 1, "view")
+
+        list_response = self.client.get(f"/trees/{tree_id}/access", headers=owner_headers)
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(
+            list_response.json(),
+            [
+                {
+                    "user_id": 1,
+                    "email": "owner@example.com",
+                    "access_level": "owner",
+                }
+            ],
+        )
+        self.assertNotIn((tree_id, 1), self.state.tree_access)
 
     def test_person_patch_updates_only_provided_fields_and_delete_reports_cascade(self):
         headers = self._auth_headers()
@@ -1161,7 +1592,7 @@ class ApiIntegrationTests(unittest.TestCase):
 
         self.client.post(
             f"/trees/{tree_id}/access",
-            json={"email": "editor@example.com", "access_level": "edit"},
+            json={"email": "editor@example.com", "access_level": "editor"},
             headers=owner_headers,
         )
 

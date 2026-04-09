@@ -65,6 +65,21 @@ FROM relationships
 
 
 class CRUD:
+    TREE_ACCESS_ROLE_BY_STORAGE = {
+        "viewer": "viewer",
+        "editor": "editor",
+        "owner": "owner",
+        "view": "viewer",
+        "edit": "editor",
+    }
+
+    TREE_ACCESS_STORAGE_BY_ROLE = {
+        "viewer": "viewer",
+        "editor": "editor",
+        "view": "viewer",
+        "edit": "editor",
+    }
+    TREE_ACCESS_ASSIGNABLE_ROLES = frozenset({"viewer", "editor"})
 
     @staticmethod
     def _record_to_dict(record):
@@ -77,6 +92,22 @@ class CRUD:
     @staticmethod
     def _executor(connection=None):
         return connection or db.pool
+
+    @classmethod
+    def _normalize_tree_access_level(cls, access_level: str | None):
+        if access_level is None:
+            return None
+        return cls.TREE_ACCESS_ROLE_BY_STORAGE.get(access_level, access_level)
+
+    @classmethod
+    def _to_tree_access_storage(cls, access_level: str):
+        normalized_access_level = cls.TREE_ACCESS_STORAGE_BY_ROLE.get(
+            access_level,
+            access_level,
+        )
+        if normalized_access_level not in cls.TREE_ACCESS_ASSIGNABLE_ROLES:
+            raise ValueError(f"Unsupported tree access role: {access_level}")
+        return normalized_access_level
 
     async def create_user(self, email: str, password_hash: str):
         normalized_email = email.strip().lower()
@@ -136,13 +167,24 @@ class CRUD:
         return self._record_to_dict(record)
 
     async def upsert_tree_access(self, tree_id: int, user_id: int, access_level: str):
+        stored_access_level = self._to_tree_access_storage(access_level)
         query = """
         INSERT INTO tree_access (tree_id, user_id, access_level)
         VALUES ($1, $2, $3)
         ON CONFLICT (tree_id, user_id)
         DO UPDATE SET access_level = EXCLUDED.access_level
         """
-        await db.pool.execute(query, tree_id, user_id, access_level)
+        await db.pool.execute(query, tree_id, user_id, stored_access_level)
+
+    async def delete_tree_owner_access_entry(
+        self,
+        tree_id: int,
+        owner_id: int | None,
+        connection=None,
+    ):
+        if not owner_id:
+            return False
+        return await self.delete_tree_access(tree_id, owner_id)
 
     async def delete_tree_access(self, tree_id: int, user_id: int):
         query = """
@@ -152,13 +194,35 @@ class CRUD:
         result = await db.pool.execute(query, tree_id, user_id)
         return str(result).endswith("1")
 
+    async def get_tree_access_entry(self, tree_id: int, user_id: int, connection=None):
+        executor = self._executor(connection)
+        query = f"""
+        {TREE_ACCESS_SELECT}
+        JOIN family_trees ON family_trees.id = tree_access.tree_id
+        WHERE tree_access.tree_id = $1
+          AND tree_access.user_id = $2
+          AND family_trees.user_id <> tree_access.user_id
+        """
+        record = self._record_to_dict(await executor.fetchrow(query, tree_id, user_id))
+        if record:
+            record["access_level"] = self._normalize_tree_access_level(
+                record.get("access_level")
+            )
+        return record
+
     async def get_tree_access_list(self, tree_id: int, owner: dict | None = None):
         query = f"""
         {TREE_ACCESS_SELECT}
+        JOIN family_trees ON family_trees.id = tree_access.tree_id
         WHERE tree_access.tree_id = $1
+          AND family_trees.user_id <> tree_access.user_id
         ORDER BY users.email
         """
         records = self._records_to_list(await db.pool.fetch(query, tree_id))
+        for record in records:
+            record["access_level"] = self._normalize_tree_access_level(
+                record.get("access_level")
+            )
         if owner and owner.get("owner_id"):
             owner_user = await self.get_user_by_id(owner["owner_id"])
             if owner_user:
@@ -171,6 +235,26 @@ class CRUD:
                     },
                 )
         return records
+
+    async def get_tree_role(self, user_id: int, tree_id: int, connection=None):
+        executor = self._executor(connection)
+        query = """
+        SELECT
+            CASE
+                WHEN family_trees.user_id = $1 THEN 'owner'
+                WHEN tree_access.access_level = 'edit' THEN 'editor'
+                WHEN tree_access.access_level = 'view' THEN 'viewer'
+                WHEN tree_access.access_level IS NOT NULL THEN tree_access.access_level::text
+                WHEN family_trees.is_public = TRUE THEN 'viewer'
+                ELSE NULL
+            END AS access_level
+        FROM family_trees
+        LEFT JOIN tree_access
+            ON tree_access.tree_id = family_trees.id
+            AND tree_access.user_id = $1
+        WHERE family_trees.id = $2
+        """
+        return await executor.fetchval(query, user_id, tree_id)
 
     async def create_tree(
         self,
@@ -241,44 +325,22 @@ class CRUD:
         ORDER BY family_trees.created_at DESC
         """
         records = await db.pool.fetch(query, user_id)
-        return self._records_to_list(records)
+        result = self._records_to_list(records)
+        for record in result:
+            record["access_level"] = self._normalize_tree_access_level(
+                record.get("access_level")
+            )
+        return result
 
     async def user_can_view_tree(self, user_id: int, tree_id: int, connection=None):
-        executor = self._executor(connection)
-        query = """
-        SELECT EXISTS (
-            SELECT 1
-            FROM family_trees
-            LEFT JOIN tree_access
-                ON tree_access.tree_id = family_trees.id
-                AND tree_access.user_id = $1
-            WHERE family_trees.id = $2
-              AND (
-                    family_trees.user_id = $1
-                    OR family_trees.is_public = TRUE
-                    OR tree_access.user_id IS NOT NULL
-              )
-        )
-        """
-        return await executor.fetchval(query, user_id, tree_id)
+        return (await self.get_tree_role(user_id, tree_id, connection=connection)) is not None
 
     async def user_can_edit_tree(self, user_id: int, tree_id: int, connection=None):
-        executor = self._executor(connection)
-        query = """
-        SELECT EXISTS (
-            SELECT 1
-            FROM family_trees
-            LEFT JOIN tree_access
-                ON tree_access.tree_id = family_trees.id
-                AND tree_access.user_id = $1
-            WHERE family_trees.id = $2
-              AND (
-                    family_trees.user_id = $1
-                    OR tree_access.access_level = 'edit'
-              )
-        )
-        """
-        return await executor.fetchval(query, user_id, tree_id)
+        return await self.get_tree_role(
+            user_id,
+            tree_id,
+            connection=connection,
+        ) in {"owner", "editor"}
 
     async def create_person(
         self,

@@ -5,10 +5,14 @@ import types
 if "asyncpg" not in sys.modules:
     asyncpg = types.ModuleType("asyncpg")
 
+    class PostgresError(Exception):
+        pass
+
     async def create_pool(*args, **kwargs):
         raise RuntimeError("asyncpg.create_pool should not be used in unit tests")
 
     asyncpg.create_pool = create_pool
+    asyncpg.PostgresError = PostgresError
     sys.modules["asyncpg"] = asyncpg
 
 

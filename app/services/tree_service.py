@@ -1,7 +1,7 @@
 from app.db.crud import crud
 from app.db.database import db
 from app.models.tree import TreeUpdate
-from app.services.permissions import ensure_tree_edit_access, ensure_tree_owner_access
+from app.services.permissions import ensure_tree_delete_access, ensure_tree_edit_access
 
 
 class TreeService:
@@ -37,13 +37,13 @@ class TreeService:
             "created_at": current_tree["created_at"],
             "access_level": "owner"
             if current_tree["owner_id"] == user_id
-            else "edit",
+            else "editor",
         }
 
     async def delete_tree(self, user_id: int, tree_id: int):
         async with db.pool.acquire() as connection:
             async with connection.transaction():
-                await ensure_tree_owner_access(user_id, tree_id, connection=connection)
+                await ensure_tree_delete_access(user_id, tree_id, connection=connection)
                 persons = await crud.get_tree_persons(tree_id, connection=connection)
                 relationships = await crud.get_tree_relationships(
                     tree_id,

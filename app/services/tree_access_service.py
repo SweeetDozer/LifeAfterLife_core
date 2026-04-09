@@ -1,12 +1,19 @@
 from fastapi import HTTPException
 
 from app.db.crud import crud
-from app.services.permissions import ensure_tree_owner_access
+from app.services.permissions import ensure_tree_access_management_access
 
 
 class TreeAccessService:
+    async def _ensure_owner_consistency(self, tree: dict):
+        await crud.delete_tree_owner_access_entry(
+            tree["id"],
+            tree.get("owner_id"),
+        )
+
     async def list_access(self, actor_user_id: int, tree_id: int):
-        tree = await ensure_tree_owner_access(actor_user_id, tree_id)
+        tree = await ensure_tree_access_management_access(actor_user_id, tree_id)
+        await self._ensure_owner_consistency(tree)
         return await crud.get_tree_access_list(tree_id, owner=tree)
 
     async def grant_access(
@@ -16,7 +23,8 @@ class TreeAccessService:
         target_email: str,
         access_level: str,
     ):
-        tree = await ensure_tree_owner_access(actor_user_id, tree_id)
+        tree = await ensure_tree_access_management_access(actor_user_id, tree_id)
+        await self._ensure_owner_consistency(tree)
         user = await crud.get_user_by_email(target_email)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
@@ -27,14 +35,53 @@ class TreeAccessService:
                 detail="Owner already has full access",
             )
 
-        await crud.upsert_tree_access(tree_id, user["id"], access_level)
+        existing_access = await crud.get_tree_access_entry(tree_id, user["id"])
+        if existing_access:
+            raise HTTPException(
+                status_code=409,
+                detail="Access entry already exists",
+            )
+
+        try:
+            await crud.upsert_tree_access(tree_id, user["id"], access_level)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {
             "user_id": user["id"],
             "access_level": access_level,
         }
 
+    async def update_access(
+        self,
+        actor_user_id: int,
+        tree_id: int,
+        target_user_id: int,
+        access_level: str,
+    ):
+        tree = await ensure_tree_access_management_access(actor_user_id, tree_id)
+        await self._ensure_owner_consistency(tree)
+        if target_user_id == tree.get("owner_id"):
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot change owner access",
+            )
+
+        existing_access = await crud.get_tree_access_entry(tree_id, target_user_id)
+        if not existing_access:
+            raise HTTPException(status_code=404, detail="Access entry not found")
+
+        try:
+            await crud.upsert_tree_access(tree_id, target_user_id, access_level)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "user_id": target_user_id,
+            "access_level": access_level,
+        }
+
     async def revoke_access(self, actor_user_id: int, tree_id: int, target_user_id: int):
-        tree = await ensure_tree_owner_access(actor_user_id, tree_id)
+        tree = await ensure_tree_access_management_access(actor_user_id, tree_id)
+        await self._ensure_owner_consistency(tree)
         if target_user_id == tree.get("owner_id"):
             raise HTTPException(
                 status_code=400,
