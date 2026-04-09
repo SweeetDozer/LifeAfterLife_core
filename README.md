@@ -55,6 +55,14 @@ python -m venv venv
 pip install -r requirements.txt
 ```
 
+Или через `pyproject.toml` для editable-установки и dev-инструментов:
+
+```powershell
+python -m venv venv
+.\venv\Scripts\activate
+pip install -e .[dev]
+```
+
 Если зависимости уже установлены в локальном `venv`, можно использовать его.
 
 ## Конфигурация окружения
