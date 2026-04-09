@@ -44,15 +44,19 @@ class TreeService:
         async with db.pool.acquire() as connection:
             async with connection.transaction():
                 await ensure_tree_delete_access(user_id, tree_id, connection=connection)
-                # We count dependents inside the same transaction, but only delete the
-                # root tree row in code. Persons, relationships, and delegated access
-                # rows are physically removed by FK ON DELETE CASCADE in Postgres.
-                persons = await crud.get_tree_persons(tree_id, connection=connection)
-                relationships = await crud.get_tree_relationships(
+                # We count dependent rows explicitly inside the same transaction,
+                # then delete only the root tree row in code. Persons,
+                # relationships, and delegated access rows are physically removed
+                # by FK ON DELETE CASCADE in Postgres.
+                deleted_persons = await crud.count_tree_persons(
                     tree_id,
                     connection=connection,
                 )
-                access_list = await crud.get_tree_access_list(
+                deleted_relationships = await crud.count_tree_relationships(
+                    tree_id,
+                    connection=connection,
+                )
+                deleted_access_entries = await crud.count_tree_access_entries(
                     tree_id,
                     connection=connection,
                 )
@@ -65,9 +69,9 @@ class TreeService:
 
         return {
             "detail": "Tree deleted",
-            "deleted_persons": len(persons),
-            "deleted_relationships": len(relationships),
-            "deleted_access_entries": len(access_list),
+            "deleted_persons": deleted_persons,
+            "deleted_relationships": deleted_relationships,
+            "deleted_access_entries": deleted_access_entries,
         }
 
 

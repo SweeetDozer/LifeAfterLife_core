@@ -1,4 +1,6 @@
 -- CREATE DATABASE LAL OWNER PyCore;
+-- Canonical schema for a new database created from scratch.
+-- Legacy migrations in migrations/*.sql are for existing databases only.
 
 -- =====================================================
 -- ENUM типы
@@ -65,7 +67,7 @@ CREATE TABLE persons (
     photo_url VARCHAR(500),
     info_about_person TEXT,
 
-    CHECK (
+    CONSTRAINT ck_persons_date_order CHECK (
         date_of_birth IS NULL
         OR date_of_death IS NULL
         OR date_of_death >= date_of_birth
@@ -91,9 +93,11 @@ CREATE TABLE relationships (
 
     relationship_type relationship_type NOT NULL,
 
-    CHECK (from_person_id <> to_person_id),
+    CONSTRAINT ck_relationships_distinct_persons
+        CHECK (from_person_id <> to_person_id),
 
-    UNIQUE (from_person_id, to_person_id, relationship_type),
+    CONSTRAINT uq_relationships_directed_type
+        UNIQUE (from_person_id, to_person_id, relationship_type),
 
     CONSTRAINT fk_relationships_tree
         FOREIGN KEY (tree_id) REFERENCES family_trees(id) ON DELETE CASCADE,
@@ -117,7 +121,7 @@ CREATE TABLE tree_access (
     user_id INTEGER NOT NULL,
     access_level access_level_type NOT NULL,
 
-    UNIQUE (tree_id, user_id),
+    CONSTRAINT uq_tree_access_tree_user UNIQUE (tree_id, user_id),
 
     CONSTRAINT fk_tree_access_tree
         FOREIGN KEY (tree_id) REFERENCES family_trees(id) ON DELETE CASCADE,

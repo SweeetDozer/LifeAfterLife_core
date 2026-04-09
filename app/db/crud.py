@@ -243,6 +243,17 @@ class CRUD:
                 )
         return records
 
+    async def count_tree_access_entries(self, tree_id: int, connection=None):
+        executor = self._executor(connection)
+        query = """
+        SELECT COUNT(*)
+        FROM tree_access
+        JOIN family_trees ON family_trees.id = tree_access.tree_id
+        WHERE tree_access.tree_id = $1
+          AND family_trees.user_id <> tree_access.user_id
+        """
+        return int(await executor.fetchval(query, tree_id) or 0)
+
     async def get_tree_role(self, user_id: int, tree_id: int, connection=None):
         executor = self._executor(connection)
         query = """
@@ -468,6 +479,15 @@ class CRUD:
         records = await executor.fetch(query, tree_id)
         return self._records_to_list(records)
 
+    async def count_tree_persons(self, tree_id: int, connection=None):
+        executor = self._executor(connection)
+        query = """
+        SELECT COUNT(*)
+        FROM persons
+        WHERE tree_id = $1
+        """
+        return int(await executor.fetchval(query, tree_id) or 0)
+
     async def create_relationship(
         self,
         tree_id: int,
@@ -524,6 +544,15 @@ class CRUD:
         """
         records = await executor.fetch(query, tree_id)
         return self._records_to_list(records)
+
+    async def count_tree_relationships(self, tree_id: int, connection=None):
+        executor = self._executor(connection)
+        query = """
+        SELECT COUNT(*)
+        FROM relationships
+        WHERE tree_id = $1
+        """
+        return int(await executor.fetchval(query, tree_id) or 0)
 
     async def get_ordered_relationship_types(
         self,

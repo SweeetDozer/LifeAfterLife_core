@@ -128,16 +128,17 @@ CORS_ALLOW_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 - активного механизма миграций нет;
 - строка `CREATE DATABASE ...` в SQL-файле закомментирована;
 - роль/пользователя БД нужно создать самостоятельно, если его ещё нет.
-- после введения role-based доступа `owner/editor/viewer` для уже существующей БД нужна отдельная миграция [`migrations/2026_04_09_tree_access_role_hardening.sql`](./migrations/2026_04_09_tree_access_role_hardening.sql): она переводит `tree_access` на роли `viewer/editor`, удаляет дубли owner в `tree_access` и усиливает ограничения на уровне схемы.
+- для новой БД, созданной сразу из [`create_LAL_DB_PG_.sql`](./create_LAL_DB_PG_.sql), старые миграции не нужны: этот файл уже описывает текущее каноническое состояние схемы;
+- для уже существующей БД миграции остаются legacy upgrade шагом: [`migrations/2026_04_09_tree_access_role_hardening.sql`](./migrations/2026_04_09_tree_access_role_hardening.sql) переводит `tree_access` на роли `viewer/editor`, удаляет дубли owner в `tree_access` и усиливает ограничения на уровне схемы;
 
 ### Delete / Cascade semantics
 
-- `DELETE /trees/{tree_id}` удаляет саму запись дерева в коде, а связанные `persons`, `relationships` и делегированные записи `tree_access` удаляются каскадом на уровне PostgreSQL.
-- `DELETE /persons/{person_id}` удаляет саму персону в коде, а связанные `relationships` удаляются каскадом БД.
-- `DELETE /relationships/{relationship_id}` контролируется кодом: для `parent` удаляется одна направленная связь, для `spouse` / `sibling` / `friend` удаляется вся симметричная пара, чтобы не оставалось "половины" связи.
-- Проект сознательно опирается на FK `ON DELETE CASCADE` для зависимостей `family_trees -> persons`, `family_trees -> relationships`, `family_trees -> tree_access` и `persons -> relationships`.
-- Инварианты при удалении: после удаления `tree` или `person` не должны оставаться висячие данные, а после удаления симметричной связи не должна оставаться только одна её сторона.
-- Для уже существующих БД delete/cascade-контракт нужно довести миграциями, а не считать, что старая схема "и так совпадает". Помимо role-hardening миграции, для явной фиксации FK delete semantics добавлена [`migrations/2026_04_09_explicit_delete_contracts.sql`](./migrations/2026_04_09_explicit_delete_contracts.sql).
+- `DELETE /trees/{tree_id}` удаляет строку из `family_trees` в коде. `persons`, `relationships` и делегированные записи `tree_access` удаляет PostgreSQL через `ON DELETE CASCADE`.
+- `DELETE /persons/{person_id}` удаляет строку из `persons` в коде. Связанные `relationships` удаляет PostgreSQL через `ON DELETE CASCADE`.
+- `DELETE /relationships/{relationship_id}` удаляется кодом: `parent` удаляет одну направленную связь, `spouse` / `sibling` / `friend` удаляют всю симметричную пару.
+- Инварианты: после удаления `tree` или `person` не остаётся висячих записей; после удаления `spouse` / `sibling` / `friend` не остаётся половины пары.
+- Этот контракт обеспечен схемой для `family_trees -> persons`, `family_trees -> relationships`, `family_trees -> tree_access` и `persons -> relationships`, плюс сервисной логикой для симметричных `relationship`.
+- Для уже существующей БД это нужно довести миграциями: [`migrations/2026_04_09_tree_access_role_hardening.sql`](./migrations/2026_04_09_tree_access_role_hardening.sql) и [`migrations/2026_04_09_explicit_delete_contracts.sql`](./migrations/2026_04_09_explicit_delete_contracts.sql).
 
 Минимальная последовательность:
 

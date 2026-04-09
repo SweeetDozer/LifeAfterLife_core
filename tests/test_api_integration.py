@@ -206,8 +206,16 @@ class _InMemoryConnection:
                 relationship_type=relationship_type,
             )
 
+        if "SELECT COUNT(*)" in query and "FROM persons" in query:
+            return self.state.count_tree_persons(args[0])
+
         if "SELECT COUNT(*)" in query and "FROM relationships" in query:
+            if "WHERE tree_id = $1" in query:
+                return self.state.count_tree_relationships(args[0])
             return self.state.count_person_relationships(args[0])
+
+        if "SELECT COUNT(*)" in query and "FROM tree_access" in query:
+            return self.state.count_tree_access_entries(args[0])
 
         raise AssertionError(f"Unsupported fetchval query: {query}")
 
@@ -572,6 +580,15 @@ class _InMemoryState:
         )
         return persons
 
+    def count_tree_persons(self, tree_id: int) -> int:
+        return len(
+            [
+                person
+                for person in self.persons.values()
+                if person["tree_id"] == tree_id
+            ]
+        )
+
     def create_relationship(
         self,
         *,
@@ -608,6 +625,15 @@ class _InMemoryState:
         relationships.sort(key=lambda relationship: relationship["id"])
         return relationships
 
+    def count_tree_relationships(self, tree_id: int) -> int:
+        return len(
+            [
+                relationship
+                for relationship in self.relationships.values()
+                if relationship["tree_id"] == tree_id
+            ]
+        )
+
     def get_person_relationships(self, person_id: int) -> list[dict[str, Any]]:
         relationships = [
             relationship.copy()
@@ -620,6 +646,15 @@ class _InMemoryState:
 
     def count_person_relationships(self, person_id: int) -> int:
         return len(self.get_person_relationships(person_id))
+
+    def count_tree_access_entries(self, tree_id: int) -> int:
+        tree = self.trees.get(tree_id)
+        owner_id = tree["owner_id"] if tree else None
+        return sum(
+            1
+            for (entry_tree_id, user_id) in self.tree_access
+            if entry_tree_id == tree_id and user_id != owner_id
+        )
 
     def delete_relationship(self, relationship_id: int) -> bool:
         return self.relationships.pop(relationship_id, None) is not None
@@ -1936,6 +1971,19 @@ class ApiIntegrationTests(unittest.TestCase):
             surviving_path_response.json(),
             {"path": [child_id, second_parent_id]},
         )
+        surviving_kinship_response = self.client.get(
+            f"/kinship/?tree_id={tree_id}&from_person_id={child_id}&to_person_id={second_parent_id}",
+            headers=headers,
+        )
+        self.assertEqual(surviving_kinship_response.status_code, 200)
+        self.assertEqual(
+            surviving_kinship_response.json()["path"],
+            [child_id, second_parent_id],
+        )
+        self.assertEqual(
+            self.state.get_pair_relationships(tree_id, child_id, first_parent_id),
+            [],
+        )
 
     def test_delete_peer_relationship_removes_symmetric_pair_for_all_peer_types(self):
         headers = self._auth_headers()
@@ -1992,6 +2040,78 @@ class ApiIntegrationTests(unittest.TestCase):
                 )
                 self.assertEqual(no_path_response.status_code, 404)
                 self.assertEqual(no_path_response.json(), {"detail": "No path found"})
+                no_kinship_response = self.client.get(
+                    f"/kinship/?tree_id={tree_id}&from_person_id={first_person_id}&to_person_id={second_person_id}",
+                    headers=headers,
+                )
+                self.assertEqual(no_kinship_response.status_code, 404)
+                self.assertEqual(no_kinship_response.json(), {"detail": "No path"})
+
+    def test_repeat_delete_returns_not_found_for_tree_person_and_relationship(self):
+        headers = self._auth_headers()
+
+        tree_id = self._create_tree(headers, name="Repeat delete tree")
+        tree_delete_response = self.client.request(
+            "DELETE",
+            f"/trees/{tree_id}",
+            headers=list(headers.items()),
+        )
+        self.assertEqual(tree_delete_response.status_code, 200)
+        repeated_tree_delete_response = self.client.request(
+            "DELETE",
+            f"/trees/{tree_id}",
+            headers=list(headers.items()),
+        )
+        self.assertEqual(repeated_tree_delete_response.status_code, 404)
+        self.assertEqual(
+            repeated_tree_delete_response.json(),
+            {"detail": "Tree not found"},
+        )
+
+        tree_id = self._create_tree(headers, name="Repeat delete person tree")
+        person_id = self._create_person(headers, tree_id=tree_id, first_name="Ghost")
+        person_delete_response = self.client.request(
+            "DELETE",
+            f"/persons/{person_id}",
+            headers=list(headers.items()),
+        )
+        self.assertEqual(person_delete_response.status_code, 200)
+        repeated_person_delete_response = self.client.request(
+            "DELETE",
+            f"/persons/{person_id}",
+            headers=list(headers.items()),
+        )
+        self.assertEqual(repeated_person_delete_response.status_code, 404)
+        self.assertEqual(
+            repeated_person_delete_response.json(),
+            {"detail": "Person not found"},
+        )
+
+        tree_id = self._create_tree(headers, name="Repeat delete relationship tree")
+        first_person_id = self._create_person(headers, tree_id=tree_id, first_name="Left")
+        second_person_id = self._create_person(headers, tree_id=tree_id, first_name="Right")
+        relationship_id = self._create_relationship(
+            headers,
+            from_person_id=first_person_id,
+            to_person_id=second_person_id,
+            relationship_type="friend",
+        )
+        relationship_delete_response = self.client.request(
+            "DELETE",
+            f"/relationships/{relationship_id}",
+            headers=list(headers.items()),
+        )
+        self.assertEqual(relationship_delete_response.status_code, 200)
+        repeated_relationship_delete_response = self.client.request(
+            "DELETE",
+            f"/relationships/{relationship_id}",
+            headers=list(headers.items()),
+        )
+        self.assertEqual(repeated_relationship_delete_response.status_code, 404)
+        self.assertEqual(
+            repeated_relationship_delete_response.json(),
+            {"detail": "Relationship not found"},
+        )
 
     def test_delete_routes_reject_missing_entities_and_users_without_required_rights(self):
         owner_headers = self._auth_headers(email="owner@example.com")
