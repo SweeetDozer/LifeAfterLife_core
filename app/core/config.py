@@ -21,7 +21,28 @@ class Settings:
         self.DB_PASSWORD = os.getenv("DB_PASSWORD")
         self.SECRET_KEY = os.getenv("SECRET_KEY")
         self.ACCESS_TOKEN_EXPIRE_MINUTES = int(
-            os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60")
+            os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15")
+        )
+        self.REFRESH_TOKEN_EXPIRE_DAYS = int(
+            os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "30")
+        )
+        self.AUTH_LOGIN_IP_FAILURE_LIMIT = int(
+            os.getenv("AUTH_LOGIN_IP_FAILURE_LIMIT", "20")
+        )
+        self.AUTH_LOGIN_EMAIL_IP_FAILURE_LIMIT = int(
+            os.getenv("AUTH_LOGIN_EMAIL_IP_FAILURE_LIMIT", "5")
+        )
+        self.AUTH_LOGIN_THROTTLE_WINDOW_MINUTES = int(
+            os.getenv("AUTH_LOGIN_THROTTLE_WINDOW_MINUTES", "15")
+        )
+        self.AUTH_LOGIN_LOCKOUT_MINUTES = int(
+            os.getenv("AUTH_LOGIN_LOCKOUT_MINUTES", "15")
+        )
+        self.AUTH_REGISTER_IP_ATTEMPT_LIMIT = int(
+            os.getenv("AUTH_REGISTER_IP_ATTEMPT_LIMIT", "10")
+        )
+        self.AUTH_REGISTER_WINDOW_MINUTES = int(
+            os.getenv("AUTH_REGISTER_WINDOW_MINUTES", "60")
         )
         self.ALLOW_LEGACY_TOKEN_HEADER = _get_bool_env(
             "ALLOW_LEGACY_TOKEN_HEADER",
@@ -68,6 +89,34 @@ class Settings:
         if self.ACCESS_TOKEN_EXPIRE_MINUTES <= 0:
             raise RuntimeError(
                 "ACCESS_TOKEN_EXPIRE_MINUTES must be greater than zero"
+            )
+        if self.REFRESH_TOKEN_EXPIRE_DAYS <= 0:
+            raise RuntimeError(
+                "REFRESH_TOKEN_EXPIRE_DAYS must be greater than zero"
+            )
+        if self.AUTH_LOGIN_IP_FAILURE_LIMIT <= 0:
+            raise RuntimeError(
+                "AUTH_LOGIN_IP_FAILURE_LIMIT must be greater than zero"
+            )
+        if self.AUTH_LOGIN_EMAIL_IP_FAILURE_LIMIT <= 0:
+            raise RuntimeError(
+                "AUTH_LOGIN_EMAIL_IP_FAILURE_LIMIT must be greater than zero"
+            )
+        if self.AUTH_LOGIN_THROTTLE_WINDOW_MINUTES <= 0:
+            raise RuntimeError(
+                "AUTH_LOGIN_THROTTLE_WINDOW_MINUTES must be greater than zero"
+            )
+        if self.AUTH_LOGIN_LOCKOUT_MINUTES <= 0:
+            raise RuntimeError(
+                "AUTH_LOGIN_LOCKOUT_MINUTES must be greater than zero"
+            )
+        if self.AUTH_REGISTER_IP_ATTEMPT_LIMIT <= 0:
+            raise RuntimeError(
+                "AUTH_REGISTER_IP_ATTEMPT_LIMIT must be greater than zero"
+            )
+        if self.AUTH_REGISTER_WINDOW_MINUTES <= 0:
+            raise RuntimeError(
+                "AUTH_REGISTER_WINDOW_MINUTES must be greater than zero"
             )
         if "*" in self.CORS_ALLOW_ORIGINS:
             raise RuntimeError(

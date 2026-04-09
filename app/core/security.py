@@ -7,6 +7,7 @@ import secrets
 import string
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from fastapi import Depends, Header, HTTPException
@@ -23,6 +24,7 @@ PASSWORD_DIGEST_BYTES = hashlib.sha256().digest_size
 
 ACCESS_TOKEN_VERSION = "v1"
 ACCESS_TOKEN_TYPE = "access"
+REFRESH_TOKEN_VERSION = "r1"
 AUTHENTICATION_HEADERS = {"WWW-Authenticate": "Bearer"}
 
 
@@ -39,6 +41,23 @@ class AccessTokenPayload:
     user_id: int
     issued_at: int
     expires_at: int
+
+
+@dataclass(frozen=True)
+class RefreshTokenSession:
+    user_id: int
+    family_id: str
+    token_id: str
+    token_hash: str
+    token: str
+    issued_at: datetime
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
+class RefreshTokenLookup:
+    token_id: str
+    token_hash: str
 
 
 class TokenValidationError(Exception):
@@ -176,6 +195,10 @@ def _token_signing_key() -> bytes:
     return settings.require_secret_key().encode("utf-8")
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def _sign_token(version: str, payload: str) -> str:
     signature = hmac.new(
         _token_signing_key(),
@@ -185,7 +208,7 @@ def _sign_token(version: str, payload: str) -> str:
     return _urlsafe_b64encode(signature)
 
 
-def create_token(user_id: int) -> str:
+def create_access_token(user_id: int) -> str:
     if user_id <= 0:
         raise ValueError("User id must be a positive integer")
 
@@ -201,6 +224,49 @@ def create_token(user_id: int) -> str:
         json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     )
     return f"{ACCESS_TOKEN_VERSION}.{payload_part}.{_sign_token(ACCESS_TOKEN_VERSION, payload_part)}"
+
+
+def create_refresh_token(
+    user_id: int,
+    family_id: str | None = None,
+) -> RefreshTokenSession:
+    if user_id <= 0:
+        raise ValueError("User id must be a positive integer")
+
+    issued_at = _utcnow()
+    expires_at = issued_at + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    token_id = secrets.token_urlsafe(18)
+    resolved_family_id = family_id or token_id
+    token_secret = secrets.token_urlsafe(32)
+    token = f"{REFRESH_TOKEN_VERSION}.{token_id}.{token_secret}"
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return RefreshTokenSession(
+        user_id=user_id,
+        family_id=resolved_family_id,
+        token_id=token_id,
+        token_hash=token_hash,
+        token=token,
+        issued_at=issued_at,
+        expires_at=expires_at,
+    )
+
+
+def parse_refresh_token(token: str) -> RefreshTokenLookup:
+    if not isinstance(token, str) or not token.strip():
+        raise TokenValidationError()
+
+    try:
+        version, token_id, token_secret = token.strip().split(".", 2)
+    except ValueError:
+        raise TokenValidationError() from None
+
+    if version != REFRESH_TOKEN_VERSION or not token_id or not token_secret:
+        raise TokenValidationError()
+
+    return RefreshTokenLookup(
+        token_id=token_id,
+        token_hash=hashlib.sha256(token.strip().encode("utf-8")).hexdigest(),
+    )
 
 
 def validate_access_token(token: str) -> AccessTokenPayload:
@@ -262,6 +328,8 @@ def extract_token(
             raise TokenValidationError()
         return value.strip()
 
+    # Temporary compatibility path for older clients that still send `token`.
+    # Keep disabled by default and remove once all clients have switched to Bearer.
     if settings.ALLOW_LEGACY_TOKEN_HEADER and legacy_token and legacy_token.strip():
         return legacy_token.strip()
 

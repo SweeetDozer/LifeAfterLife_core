@@ -30,6 +30,44 @@ CREATE TABLE users (
 
 CREATE UNIQUE INDEX uq_users_email_lower ON users (LOWER(email));
 
+CREATE TABLE user_refresh_tokens (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    family_id VARCHAR(128) NOT NULL,
+    token_id VARCHAR(128) NOT NULL,
+    token_hash CHAR(64) NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_used_at TIMESTAMP,
+    revoked_at TIMESTAMP,
+    replaced_by_token_id VARCHAR(128),
+
+    CONSTRAINT uq_user_refresh_tokens_token_id UNIQUE (token_id),
+    CONSTRAINT fk_user_refresh_tokens_user
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_user_refresh_tokens_user_id ON user_refresh_tokens (user_id);
+CREATE INDEX idx_user_refresh_tokens_family_id ON user_refresh_tokens (family_id);
+CREATE INDEX idx_user_refresh_tokens_expires_at ON user_refresh_tokens (expires_at);
+
+CREATE TABLE auth_throttle_entries (
+    id SERIAL PRIMARY KEY,
+    throttle_key_type VARCHAR(64) NOT NULL,
+    throttle_key_value VARCHAR(320) NOT NULL,
+    attempt_count INTEGER NOT NULL,
+    window_started_at TIMESTAMP NOT NULL,
+    last_attempt_at TIMESTAMP NOT NULL,
+    locked_until TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT uq_auth_throttle_entries_key UNIQUE (throttle_key_type, throttle_key_value),
+    CONSTRAINT ck_auth_throttle_entries_attempt_count CHECK (attempt_count > 0)
+);
+
+CREATE INDEX idx_auth_throttle_entries_locked_until ON auth_throttle_entries (locked_until);
+
 -- =====================================================
 -- family_trees
 -- =====================================================

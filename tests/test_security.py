@@ -44,13 +44,13 @@ class PasswordSecurityTests(unittest.TestCase):
 
 
 class TokenSecurityTests(unittest.IsolatedAsyncioTestCase):
-    def test_validate_access_token_accepts_token_created_by_create_token(self):
+    def test_validate_access_token_accepts_token_created_by_create_access_token(self):
         with (
             patch.object(security.settings, "SECRET_KEY", TEST_SECRET_KEY),
             patch.object(security.settings, "ACCESS_TOKEN_EXPIRE_MINUTES", 15),
             patch("app.core.security.time.time", return_value=1_700_000_000),
         ):
-            token = security.create_token(42)
+            token = security.create_access_token(42)
             payload = security.validate_access_token(token)
 
         self.assertEqual(payload.user_id, 42)
@@ -63,7 +63,7 @@ class TokenSecurityTests(unittest.IsolatedAsyncioTestCase):
             patch.object(security.settings, "ACCESS_TOKEN_EXPIRE_MINUTES", 15),
             patch("app.core.security.time.time", return_value=1_700_000_000),
         ):
-            token = security.create_token(42)
+            token = security.create_access_token(42)
 
         version, payload_part, signature_part = token.split(".")
         payload = json.loads(security._urlsafe_b64decode(payload_part))
@@ -86,7 +86,7 @@ class TokenSecurityTests(unittest.IsolatedAsyncioTestCase):
             patch.object(security.settings, "ACCESS_TOKEN_EXPIRE_MINUTES", 15),
             patch("app.core.security.time.time", return_value=1_700_000_400),
         ):
-            token = security.create_token(42)
+            token = security.create_access_token(42)
 
         with (
             patch.object(security.settings, "SECRET_KEY", TEST_SECRET_KEY),
@@ -102,7 +102,7 @@ class TokenSecurityTests(unittest.IsolatedAsyncioTestCase):
             patch.object(security.settings, "ALLOW_LEGACY_TOKEN_HEADER", True),
             patch("app.core.security.time.time", return_value=1_700_000_000),
         ):
-            token = security.create_token(7)
+            token = security.create_access_token(7)
 
         with (
             patch.object(security.settings, "SECRET_KEY", TEST_SECRET_KEY),
@@ -120,13 +120,22 @@ class TokenSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(user["id"], 7)
         crud_mock.get_user_by_id.assert_awaited_once_with(7)
 
+    def test_extract_token_ignores_legacy_token_header_when_disabled(self):
+        with patch.object(security.settings, "ALLOW_LEGACY_TOKEN_HEADER", False):
+            self.assertIsNone(
+                security.extract_token(
+                    authorization=None,
+                    legacy_token="legacy-token-value",
+                )
+            )
+
     async def test_get_current_user_rejects_token_for_missing_user(self):
         with (
             patch.object(security.settings, "SECRET_KEY", TEST_SECRET_KEY),
             patch.object(security.settings, "ACCESS_TOKEN_EXPIRE_MINUTES", 15),
             patch("app.core.security.time.time", return_value=1_700_000_000),
         ):
-            token = security.create_token(7)
+            token = security.create_access_token(7)
 
         with (
             patch.object(security.settings, "SECRET_KEY", TEST_SECRET_KEY),

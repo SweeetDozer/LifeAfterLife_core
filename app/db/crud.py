@@ -21,6 +21,35 @@ SELECT
 FROM users
 """
 
+REFRESH_TOKEN_SELECT = """
+SELECT
+    id,
+    user_id,
+    family_id,
+    token_id,
+    token_hash,
+    expires_at,
+    created_at,
+    last_used_at,
+    revoked_at,
+    replaced_by_token_id
+FROM user_refresh_tokens
+"""
+
+AUTH_THROTTLE_SELECT = """
+SELECT
+    id,
+    throttle_key_type,
+    throttle_key_value,
+    attempt_count,
+    window_started_at,
+    last_attempt_at,
+    locked_until,
+    created_at,
+    updated_at
+FROM auth_throttle_entries
+"""
+
 USER_PUBLIC_SELECT = """
 SELECT
     id,
@@ -165,6 +194,221 @@ class CRUD:
         """
         record = await db.pool.fetchrow(query, user_id)
         return self._record_to_dict(record)
+
+    async def create_refresh_token(
+        self,
+        user_id: int,
+        family_id: str,
+        token_id: str,
+        token_hash: str,
+        expires_at,
+        connection=None,
+    ):
+        executor = self._executor(connection)
+        query = """
+        INSERT INTO user_refresh_tokens (user_id, family_id, token_id, token_hash, expires_at)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id
+        """
+        return await executor.fetchval(
+            query,
+            user_id,
+            family_id,
+            token_id,
+            token_hash,
+            expires_at,
+        )
+
+    async def get_refresh_token_by_token_id(
+        self,
+        token_id: str,
+        connection=None,
+        for_update: bool = False,
+    ):
+        executor = self._executor(connection)
+        query = f"""
+        {REFRESH_TOKEN_SELECT}
+        WHERE token_id = $1
+        """
+        if for_update:
+            query = f"{query}\nFOR UPDATE"
+        record = await executor.fetchrow(query, token_id)
+        return self._record_to_dict(record)
+
+    async def rotate_refresh_token(
+        self,
+        current_token_row_id: int,
+        next_token_id: str,
+        next_token_hash: str,
+        next_expires_at,
+        connection=None,
+    ):
+        executor = self._executor(connection)
+        query = """
+        UPDATE user_refresh_tokens
+        SET
+            revoked_at = CURRENT_TIMESTAMP,
+            last_used_at = CURRENT_TIMESTAMP,
+            replaced_by_token_id = $2
+        WHERE id = $1
+        """
+        await executor.execute(query, current_token_row_id, next_token_id)
+
+        insert_query = """
+        INSERT INTO user_refresh_tokens (user_id, family_id, token_id, token_hash, expires_at)
+        SELECT user_id, family_id, $2, $3, $4
+        FROM user_refresh_tokens
+        WHERE id = $1
+        RETURNING id
+        """
+        return await executor.fetchval(
+            insert_query,
+            current_token_row_id,
+            next_token_id,
+            next_token_hash,
+            next_expires_at,
+        )
+
+    async def revoke_refresh_token_family(
+        self,
+        family_id: str,
+        connection=None,
+    ):
+        executor = self._executor(connection)
+        query = """
+        UPDATE user_refresh_tokens
+        SET
+            revoked_at = CURRENT_TIMESTAMP
+        WHERE family_id = $1
+          AND revoked_at IS NULL
+        """
+        await executor.execute(query, family_id)
+
+    async def revoke_refresh_token_family_for_user(
+        self,
+        user_id: int,
+        family_id: str,
+        connection=None,
+    ):
+        executor = self._executor(connection)
+        query = """
+        UPDATE user_refresh_tokens
+        SET
+            revoked_at = CURRENT_TIMESTAMP
+        WHERE user_id = $1
+          AND family_id = $2
+          AND revoked_at IS NULL
+        """
+        await executor.execute(query, user_id, family_id)
+
+    async def revoke_all_refresh_tokens_for_user(
+        self,
+        user_id: int,
+        connection=None,
+    ):
+        executor = self._executor(connection)
+        query = """
+        UPDATE user_refresh_tokens
+        SET
+            revoked_at = CURRENT_TIMESTAMP
+        WHERE user_id = $1
+          AND revoked_at IS NULL
+        """
+        await executor.execute(query, user_id)
+
+    async def get_auth_throttle_entry(
+        self,
+        throttle_key_type: str,
+        throttle_key_value: str,
+        connection=None,
+        for_update: bool = False,
+    ):
+        executor = self._executor(connection)
+        query = f"""
+        {AUTH_THROTTLE_SELECT}
+        WHERE throttle_key_type = $1
+          AND throttle_key_value = $2
+        """
+        if for_update:
+            query = f"{query}\nFOR UPDATE"
+        record = await executor.fetchrow(query, throttle_key_type, throttle_key_value)
+        return self._record_to_dict(record)
+
+    async def create_auth_throttle_entry(
+        self,
+        throttle_key_type: str,
+        throttle_key_value: str,
+        attempt_count: int,
+        window_started_at,
+        last_attempt_at,
+        locked_until,
+        connection=None,
+    ):
+        executor = self._executor(connection)
+        query = """
+        INSERT INTO auth_throttle_entries (
+            throttle_key_type,
+            throttle_key_value,
+            attempt_count,
+            window_started_at,
+            last_attempt_at,
+            locked_until
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id
+        """
+        return await executor.fetchval(
+            query,
+            throttle_key_type,
+            throttle_key_value,
+            attempt_count,
+            window_started_at,
+            last_attempt_at,
+            locked_until,
+        )
+
+    async def update_auth_throttle_entry(
+        self,
+        entry_id: int,
+        attempt_count: int,
+        window_started_at,
+        last_attempt_at,
+        locked_until,
+        connection=None,
+    ):
+        executor = self._executor(connection)
+        query = """
+        UPDATE auth_throttle_entries
+        SET
+            attempt_count = $2,
+            window_started_at = $3,
+            last_attempt_at = $4,
+            locked_until = $5,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+        """
+        await executor.execute(
+            query,
+            entry_id,
+            attempt_count,
+            window_started_at,
+            last_attempt_at,
+            locked_until,
+        )
+
+    async def delete_auth_throttle_entry(
+        self,
+        throttle_key_type: str,
+        throttle_key_value: str,
+        connection=None,
+    ):
+        executor = self._executor(connection)
+        query = """
+        DELETE FROM auth_throttle_entries
+        WHERE throttle_key_type = $1
+          AND throttle_key_value = $2
+        """
+        await executor.execute(query, throttle_key_type, throttle_key_value)
 
     async def upsert_tree_access(self, tree_id: int, user_id: int, access_level: str):
         stored_access_level = self._to_tree_access_storage(access_level)

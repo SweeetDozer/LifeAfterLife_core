@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 from unittest.mock import patch
 
 from app.core.config import settings
+from app.core.security import parse_refresh_token
 from app.main import create_app
 
 
@@ -108,6 +109,53 @@ class _InMemoryConnection:
             deleted = self.state.delete_relationship(relationship_ids)
             return "DELETE 1" if deleted else "DELETE 0"
 
+        if "UPDATE user_refresh_tokens" in query:
+            if "WHERE id = $1" in query:
+                current_token_row_id, next_token_id = args
+                self.state.rotate_refresh_token_row(
+                    current_token_row_id,
+                    next_token_id,
+                )
+                return "UPDATE 1"
+
+            if "WHERE family_id = $1" in query and "user_id" not in query:
+                self.state.revoke_refresh_token_family(args[0])
+                return "UPDATE 1"
+
+            if "WHERE user_id = $1" in query and "family_id = $2" in query:
+                user_id, family_id = args
+                self.state.revoke_refresh_token_family(family_id, user_id=user_id)
+                return "UPDATE 1"
+
+            if "WHERE user_id = $1" in query and "family_id = $2" not in query:
+                self.state.revoke_all_refresh_tokens_for_user(args[0])
+                return "UPDATE 1"
+
+        if "UPDATE auth_throttle_entries" in query:
+            (
+                entry_id,
+                attempt_count,
+                window_started_at,
+                last_attempt_at,
+                locked_until,
+            ) = args
+            self.state.update_auth_throttle_entry(
+                entry_id,
+                attempt_count,
+                window_started_at,
+                last_attempt_at,
+                locked_until,
+            )
+            return "UPDATE 1"
+
+        if "DELETE FROM auth_throttle_entries" in query:
+            throttle_key_type, throttle_key_value = args
+            deleted = self.state.delete_auth_throttle_entry(
+                throttle_key_type,
+                throttle_key_value,
+            )
+            return "DELETE 1" if deleted else "DELETE 0"
+
         raise AssertionError(f"Unsupported execute query: {query}")
 
     async def fetchrow(self, query: str, *args):
@@ -133,6 +181,17 @@ class _InMemoryConnection:
                 "created_at": user["created_at"],
             }
             return _Record(public_user)
+
+        if "FROM user_refresh_tokens" in query and "WHERE token_id = $1" in query:
+            token = self.state.get_refresh_token_by_token_id(args[0])
+            return _Record(token.copy()) if token else None
+
+        if (
+            "FROM auth_throttle_entries" in query
+            and "WHERE throttle_key_type = $1" in query
+        ):
+            entry = self.state.get_auth_throttle_entry(args[0], args[1])
+            return _Record(entry.copy()) if entry else None
 
         if "FROM family_trees" in query and "WHERE id = $1" in query:
             tree = self.state.trees.get(args[0])
@@ -164,6 +223,43 @@ class _InMemoryConnection:
         if "INSERT INTO users" in query:
             email, password_hash = args
             return self.state.create_user(email, password_hash)
+
+        if "INSERT INTO user_refresh_tokens" in query:
+            if len(args) == 5:
+                user_id, family_id, token_id, token_hash, expires_at = args
+                return self.state.create_refresh_token(
+                    user_id,
+                    family_id,
+                    token_id,
+                    token_hash,
+                    expires_at,
+                )
+
+            current_token_row_id, next_token_id, next_token_hash, next_expires_at = args
+            return self.state.create_rotated_refresh_token(
+                current_token_row_id,
+                next_token_id,
+                next_token_hash,
+                next_expires_at,
+            )
+
+        if "INSERT INTO auth_throttle_entries" in query:
+            (
+                throttle_key_type,
+                throttle_key_value,
+                attempt_count,
+                window_started_at,
+                last_attempt_at,
+                locked_until,
+            ) = args
+            return self.state.create_auth_throttle_entry(
+                throttle_key_type,
+                throttle_key_value,
+                attempt_count,
+                window_started_at,
+                last_attempt_at,
+                locked_until,
+            )
 
         if "INSERT INTO family_trees" in query:
             owner_id, name, description, is_public = args
@@ -306,11 +402,15 @@ class _InMemoryPool:
 class _InMemoryState:
     def __init__(self):
         self.users: dict[int, dict[str, Any]] = {}
+        self.refresh_tokens: dict[int, dict[str, Any]] = {}
+        self.auth_throttle_entries: dict[tuple[str, str], dict[str, Any]] = {}
         self.trees: dict[int, dict[str, Any]] = {}
         self.persons: dict[int, dict[str, Any]] = {}
         self.relationships: dict[int, dict[str, Any]] = {}
         self.tree_access: dict[tuple[int, int], dict[str, Any]] = {}
         self.next_user_id = 1
+        self.next_refresh_token_row_id = 1
+        self.next_auth_throttle_entry_id = 1
         self.next_tree_id = 1
         self.next_person_id = 1
         self.next_relationship_id = 1
@@ -336,6 +436,146 @@ class _InMemoryState:
             "created_at": _utcnow(),
         }
         return user_id
+
+    def create_refresh_token(
+        self,
+        user_id: int,
+        family_id: str,
+        token_id: str,
+        token_hash: str,
+        expires_at: datetime,
+    ) -> int:
+        row_id = self.next_refresh_token_row_id
+        self.next_refresh_token_row_id += 1
+        self.refresh_tokens[row_id] = {
+            "id": row_id,
+            "user_id": user_id,
+            "family_id": family_id,
+            "token_id": token_id,
+            "token_hash": token_hash,
+            "expires_at": expires_at,
+            "created_at": _utcnow(),
+            "last_used_at": None,
+            "revoked_at": None,
+            "replaced_by_token_id": None,
+        }
+        return row_id
+
+    def get_refresh_token_by_token_id(self, token_id: str) -> dict[str, Any] | None:
+        for refresh_token in self.refresh_tokens.values():
+            if refresh_token["token_id"] == token_id:
+                return refresh_token
+        return None
+
+    def rotate_refresh_token_row(
+        self,
+        current_token_row_id: int,
+        next_token_id: str,
+    ):
+        token = self.refresh_tokens.get(current_token_row_id)
+        if token is None:
+            return
+        token["revoked_at"] = _utcnow()
+        token["last_used_at"] = _utcnow()
+        token["replaced_by_token_id"] = next_token_id
+
+    def create_rotated_refresh_token(
+        self,
+        current_token_row_id: int,
+        next_token_id: str,
+        next_token_hash: str,
+        next_expires_at: datetime,
+    ) -> int | None:
+        current = self.refresh_tokens.get(current_token_row_id)
+        if current is None:
+            return None
+        return self.create_refresh_token(
+            current["user_id"],
+            current["family_id"],
+            next_token_id,
+            next_token_hash,
+            next_expires_at,
+        )
+
+    def revoke_refresh_token_family(
+        self,
+        family_id: str,
+        user_id: int | None = None,
+    ):
+        for token in self.refresh_tokens.values():
+            if token["family_id"] != family_id:
+                continue
+            if user_id is not None and token["user_id"] != user_id:
+                continue
+            if token["revoked_at"] is None:
+                token["revoked_at"] = _utcnow()
+
+    def revoke_all_refresh_tokens_for_user(self, user_id: int):
+        for token in self.refresh_tokens.values():
+            if token["user_id"] == user_id and token["revoked_at"] is None:
+                token["revoked_at"] = _utcnow()
+
+    def get_auth_throttle_entry(
+        self,
+        throttle_key_type: str,
+        throttle_key_value: str,
+    ) -> dict[str, Any] | None:
+        return self.auth_throttle_entries.get((throttle_key_type, throttle_key_value))
+
+    def create_auth_throttle_entry(
+        self,
+        throttle_key_type: str,
+        throttle_key_value: str,
+        attempt_count: int,
+        window_started_at: datetime,
+        last_attempt_at: datetime,
+        locked_until: datetime | None,
+    ) -> int:
+        entry_id = self.next_auth_throttle_entry_id
+        self.next_auth_throttle_entry_id += 1
+        self.auth_throttle_entries[(throttle_key_type, throttle_key_value)] = {
+            "id": entry_id,
+            "throttle_key_type": throttle_key_type,
+            "throttle_key_value": throttle_key_value,
+            "attempt_count": attempt_count,
+            "window_started_at": window_started_at,
+            "last_attempt_at": last_attempt_at,
+            "locked_until": locked_until,
+            "created_at": _utcnow(),
+            "updated_at": _utcnow(),
+        }
+        return entry_id
+
+    def update_auth_throttle_entry(
+        self,
+        entry_id: int,
+        attempt_count: int,
+        window_started_at: datetime,
+        last_attempt_at: datetime,
+        locked_until: datetime | None,
+    ):
+        for entry in self.auth_throttle_entries.values():
+            if entry["id"] != entry_id:
+                continue
+            entry["attempt_count"] = attempt_count
+            entry["window_started_at"] = window_started_at
+            entry["last_attempt_at"] = last_attempt_at
+            entry["locked_until"] = locked_until
+            entry["updated_at"] = _utcnow()
+            return
+
+    def delete_auth_throttle_entry(
+        self,
+        throttle_key_type: str,
+        throttle_key_value: str,
+    ) -> bool:
+        return (
+            self.auth_throttle_entries.pop(
+                (throttle_key_type, throttle_key_value),
+                None,
+            )
+            is not None
+        )
 
     def create_tree(
         self,
@@ -855,6 +1095,27 @@ class ApiIntegrationTests(unittest.TestCase):
             patch.object(settings, "ACCESS_TOKEN_EXPIRE_MINUTES", 60)
         )
         self.patch_stack.enter_context(
+            patch.object(settings, "REFRESH_TOKEN_EXPIRE_DAYS", 30)
+        )
+        self.patch_stack.enter_context(
+            patch.object(settings, "AUTH_LOGIN_IP_FAILURE_LIMIT", 10)
+        )
+        self.patch_stack.enter_context(
+            patch.object(settings, "AUTH_LOGIN_EMAIL_IP_FAILURE_LIMIT", 3)
+        )
+        self.patch_stack.enter_context(
+            patch.object(settings, "AUTH_LOGIN_THROTTLE_WINDOW_MINUTES", 15)
+        )
+        self.patch_stack.enter_context(
+            patch.object(settings, "AUTH_LOGIN_LOCKOUT_MINUTES", 15)
+        )
+        self.patch_stack.enter_context(
+            patch.object(settings, "AUTH_REGISTER_IP_ATTEMPT_LIMIT", 3)
+        )
+        self.patch_stack.enter_context(
+            patch.object(settings, "AUTH_REGISTER_WINDOW_MINUTES", 60)
+        )
+        self.patch_stack.enter_context(
             patch.object(settings, "ALLOW_LEGACY_TOKEN_HEADER", False)
         )
         self.patch_stack.enter_context(
@@ -908,6 +1169,40 @@ class ApiIntegrationTests(unittest.TestCase):
         login_response = self._login_user(email=email, password=password)
         token = login_response.json()["access_token"]
         return {"Authorization": f"Bearer {token}"}
+
+    def _login_tokens(
+        self,
+        email: str = "user@example.com",
+        password: str = "password123",
+    ) -> dict[str, Any]:
+        response = self._login_user(email=email, password=password)
+        self.assertEqual(response.status_code, 200)
+        return response.json()
+
+    def _refresh_tokens(self, refresh_token: str):
+        return self.client.post(
+            "/auth/refresh",
+            json={"refresh_token": refresh_token},
+        )
+
+    def _logout_current(self, refresh_token: str):
+        return self.client.post(
+            "/auth/logout",
+            json={"refresh_token": refresh_token},
+        )
+
+    def _logout_all(self, headers: dict[str, str]):
+        return self.client.post("/auth/logout-all", headers=headers)
+
+    @staticmethod
+    def _refresh_token_id(refresh_token: str) -> str:
+        return parse_refresh_token(refresh_token).token_id
+
+    def _refresh_token_row(self, refresh_token: str) -> dict[str, Any]:
+        token_id = self._refresh_token_id(refresh_token)
+        row = self.state.get_refresh_token_by_token_id(token_id)
+        self.assertIsNotNone(row)
+        return row
 
     def _create_tree(
         self,
@@ -993,6 +1288,7 @@ class ApiIntegrationTests(unittest.TestCase):
         login_payload = login_response.json()
         self.assertEqual(login_payload["token_type"], "bearer")
         self.assertTrue(login_payload["access_token"])
+        self.assertTrue(login_payload["refresh_token"])
 
     def test_auth_rejects_invalid_payload_and_invalid_credentials(self):
         invalid_register_response = self.client.post(
@@ -1008,6 +1304,174 @@ class ApiIntegrationTests(unittest.TestCase):
             invalid_login_response.json(),
             {"detail": "Invalid credentials"},
         )
+
+    def test_refresh_returns_new_access_token_and_rotates_refresh_token(self):
+        self._register_user()
+        login_payload = self._login_tokens()
+
+        initial_row = self._refresh_token_row(login_payload["refresh_token"])
+        self.assertIsNone(initial_row["revoked_at"])
+
+        refresh_response = self._refresh_tokens(login_payload["refresh_token"])
+        self.assertEqual(refresh_response.status_code, 200)
+        refresh_payload = refresh_response.json()
+        self.assertEqual(refresh_payload["token_type"], "bearer")
+        self.assertTrue(refresh_payload["access_token"])
+        self.assertNotEqual(
+            refresh_payload["refresh_token"],
+            login_payload["refresh_token"],
+        )
+
+        rotated_old_row = self._refresh_token_row(login_payload["refresh_token"])
+        rotated_new_row = self._refresh_token_row(refresh_payload["refresh_token"])
+        self.assertIsNotNone(rotated_old_row["revoked_at"])
+        self.assertEqual(
+            rotated_old_row["replaced_by_token_id"],
+            rotated_new_row["token_id"],
+        )
+        self.assertEqual(rotated_old_row["family_id"], rotated_new_row["family_id"])
+        self.assertIsNone(rotated_new_row["revoked_at"])
+
+    def test_reuse_of_rotated_refresh_token_is_rejected_and_revokes_family(self):
+        self._register_user()
+        login_payload = self._login_tokens()
+        refresh_payload = self._refresh_tokens(login_payload["refresh_token"]).json()
+
+        replay_response = self._refresh_tokens(login_payload["refresh_token"])
+        self.assertEqual(replay_response.status_code, 401)
+        self.assertEqual(
+            replay_response.json(),
+            {"detail": "Refresh token replay detected"},
+        )
+
+        old_row = self._refresh_token_row(login_payload["refresh_token"])
+        new_row = self._refresh_token_row(refresh_payload["refresh_token"])
+        self.assertIsNotNone(old_row["revoked_at"])
+        self.assertIsNotNone(new_row["revoked_at"])
+        self.assertEqual(old_row["family_id"], new_row["family_id"])
+
+    def test_logout_current_session_revokes_refresh_token_family(self):
+        self._register_user()
+        login_payload = self._login_tokens()
+
+        logout_response = self._logout_current(login_payload["refresh_token"])
+        self.assertEqual(logout_response.status_code, 200)
+        self.assertEqual(
+            logout_response.json(),
+            {
+                "detail": (
+                    "Refresh session revoked. Existing access tokens remain valid until they expire."
+                )
+            },
+        )
+
+        refresh_row = self._refresh_token_row(login_payload["refresh_token"])
+        self.assertIsNotNone(refresh_row["revoked_at"])
+
+        refresh_response = self._refresh_tokens(login_payload["refresh_token"])
+        self.assertEqual(refresh_response.status_code, 401)
+        self.assertEqual(
+            refresh_response.json(),
+            {"detail": "Refresh token replay detected"},
+        )
+
+    def test_logout_all_revokes_all_refresh_sessions_for_current_user(self):
+        self._register_user()
+        first_login_payload = self._login_tokens()
+        second_login_payload = self._login_tokens()
+
+        logout_all_response = self._logout_all(
+            {"Authorization": f"Bearer {first_login_payload['access_token']}"}
+        )
+        self.assertEqual(logout_all_response.status_code, 200)
+        self.assertEqual(
+            logout_all_response.json(),
+            {
+                "detail": (
+                    "All refresh sessions revoked. Existing access tokens remain valid until they expire."
+                )
+            },
+        )
+
+        user_id = self.state.find_user_by_email("user@example.com")["id"]
+        user_refresh_rows = [
+            row
+            for row in self.state.refresh_tokens.values()
+            if row["user_id"] == user_id
+        ]
+        self.assertGreaterEqual(len(user_refresh_rows), 2)
+        self.assertTrue(all(row["revoked_at"] is not None for row in user_refresh_rows))
+
+        refresh_response = self._refresh_tokens(second_login_payload["refresh_token"])
+        self.assertEqual(refresh_response.status_code, 401)
+        self.assertEqual(
+            refresh_response.json(),
+            {"detail": "Refresh token replay detected"},
+        )
+
+    def test_access_token_is_not_accepted_as_refresh_token(self):
+        self._register_user()
+        login_payload = self._login_tokens()
+
+        refresh_response = self._refresh_tokens(login_payload["access_token"])
+        self.assertEqual(refresh_response.status_code, 401)
+        self.assertEqual(
+            refresh_response.json(),
+            {"detail": "Invalid refresh token"},
+        )
+
+        refresh_row = self._refresh_token_row(login_payload["refresh_token"])
+        self.assertIsNone(refresh_row["revoked_at"])
+
+    def test_invalid_and_expired_refresh_tokens_are_rejected(self):
+        self._register_user()
+        login_payload = self._login_tokens()
+
+        invalid_response = self._refresh_tokens("not-a-refresh-token")
+        self.assertEqual(invalid_response.status_code, 401)
+        self.assertEqual(
+            invalid_response.json(),
+            {"detail": "Invalid refresh token"},
+        )
+
+        refresh_row = self._refresh_token_row(login_payload["refresh_token"])
+        refresh_row["expires_at"] = datetime(2000, 1, 1)
+
+        expired_response = self._refresh_tokens(login_payload["refresh_token"])
+        self.assertEqual(expired_response.status_code, 401)
+        self.assertEqual(
+            expired_response.json(),
+            {"detail": "Refresh token expired"},
+        )
+        self.assertIsNone(refresh_row["revoked_at"])
+
+    def test_login_throttles_repeated_failed_attempts_for_same_email_and_ip(self):
+        self._register_user()
+
+        for _ in range(3):
+            invalid_login_response = self._login_user(password="wrong-password")
+            self.assertEqual(invalid_login_response.status_code, 401)
+
+        throttled_response = self._login_user(password="password123")
+        self.assertEqual(throttled_response.status_code, 429)
+        self.assertEqual(
+            throttled_response.json(),
+            {"detail": "Too many authentication attempts. Try again later."},
+        )
+        self.assertIn("retry-after", throttled_response.headers)
+
+    def test_register_throttles_after_too_many_attempts_from_same_ip(self):
+        for attempt in range(3):
+            response = self._register_user(email=f"user{attempt}@example.com")
+            self.assertEqual(response.status_code, 200)
+
+        throttled_response = self._register_user(email="user3@example.com")
+        self.assertEqual(throttled_response.status_code, 429)
+        self.assertEqual(
+            throttled_response.json(),
+            {"detail": "Too many registration attempts. Try again later."},
+        )
+        self.assertIn("retry-after", throttled_response.headers)
 
     def test_protected_routes_require_token_and_allow_happy_path_with_token(self):
         unauthorized_response = self.client.post(

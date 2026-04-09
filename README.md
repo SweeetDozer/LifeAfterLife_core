@@ -82,8 +82,14 @@ Copy-Item .env.example .env
 ### Необязательные переменные
 
 - `DB_PORT` - порт PostgreSQL, по умолчанию `5432`.
-- `ACCESS_TOKEN_EXPIRE_MINUTES` - срок жизни access token, по умолчанию `60`.
-- `ALLOW_LEGACY_TOKEN_HEADER` - если `true`, приложение примет старый заголовок `token`; по умолчанию `false`.
+- `ACCESS_TOKEN_EXPIRE_MINUTES` - срок жизни access token, по умолчанию `15`.
+- `REFRESH_TOKEN_EXPIRE_DAYS` - срок жизни refresh token / refresh session, по умолчанию `30`.
+- `AUTH_LOGIN_IP_FAILURE_LIMIT` - сколько неудачных логинов допускается с одного IP в окне throttling; по умолчанию `20`.
+- `AUTH_LOGIN_EMAIL_IP_FAILURE_LIMIT` - сколько неудачных логинов допускается для пары `email + IP`; по умолчанию `5`.
+- `AUTH_LOGIN_THROTTLE_WINDOW_MINUTES` - окно для подсчёта неудачных логинов; по умолчанию `15`.
+- `AUTH_LOGIN_LOCKOUT_MINUTES` - длительность lockout после достижения login-лимита; по умолчанию `15`.
+- `AUTH_REGISTER_IP_ATTEMPT_LIMIT` - сколько регистраций допускается с одного IP в окне throttling; по умолчанию `10`.
+- `AUTH_REGISTER_WINDOW_MINUTES` - окно для ограничения регистраций с одного IP; по умолчанию `60`.
 - `CORS_ALLOW_ORIGINS` - список allowed origins через запятую; по умолчанию `http://localhost:5173,http://127.0.0.1:5173`.
 - `CORS_ALLOW_ORIGINS` не должен содержать `*`, потому что приложение включает `allow_credentials=True`.
 
@@ -96,8 +102,14 @@ DB_NAME=LAL
 DB_USER=lal_user
 DB_PASSWORD=change_me
 SECRET_KEY=replace_with_a_long_random_string_at_least_32_chars
-ACCESS_TOKEN_EXPIRE_MINUTES=60
-ALLOW_LEGACY_TOKEN_HEADER=false
+ACCESS_TOKEN_EXPIRE_MINUTES=15
+REFRESH_TOKEN_EXPIRE_DAYS=30
+AUTH_LOGIN_IP_FAILURE_LIMIT=20
+AUTH_LOGIN_EMAIL_IP_FAILURE_LIMIT=5
+AUTH_LOGIN_THROTTLE_WINDOW_MINUTES=15
+AUTH_LOGIN_LOCKOUT_MINUTES=15
+AUTH_REGISTER_IP_ATTEMPT_LIMIT=10
+AUTH_REGISTER_WINDOW_MINUTES=60
 CORS_ALLOW_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 ```
 
@@ -109,7 +121,41 @@ CORS_ALLOW_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 - создать базу и пользователя;
 - заполнить обязательные `DB_*`;
 - указать `SECRET_KEY` длиной не менее 32 символов;
-- оставить значения по умолчанию для `DB_PORT`, `ACCESS_TOKEN_EXPIRE_MINUTES`, `ALLOW_LEGACY_TOKEN_HEADER` и `CORS_ALLOW_ORIGINS`, если они вам подходят.
+- оставить значения по умолчанию для `DB_PORT`, `ACCESS_TOKEN_EXPIRE_MINUTES`, `REFRESH_TOKEN_EXPIRE_DAYS`, auth throttling-переменных и `CORS_ALLOW_ORIGINS`, если они вам подходят.
+
+## Auth token TTL
+
+- `ACCESS_TOKEN_EXPIRE_MINUTES` задает срок жизни stateless bearer access token. Значение по умолчанию: `15` минут.
+- `REFRESH_TOKEN_EXPIRE_DAYS` задает срок жизни server-side refresh session. Значение по умолчанию: `30` дней.
+- Более короткий access token уменьшает окно риска, если bearer token утек.
+- Более длинный refresh token сохраняет нормальный DX: клиент может обновлять access token без постоянного повторного логина.
+- Logout и revoke инвалидируют refresh sessions сразу, но уже выданные access tokens живут до своего `exp`.
+
+## Auth flow
+
+- `POST /auth/login` проверяет credentials и возвращает `access_token`, `refresh_token` и `token_type`.
+- `access_token` используется в `Authorization: Bearer <token>` для защищённых роутов.
+- `refresh_token` хранится и ротируется сервером: `POST /auth/refresh` выдаёт новую auth-пару, а старый refresh token перестаёт быть активным.
+- `POST /auth/logout` отзывает текущую refresh session.
+- `POST /auth/logout-all` отзывает все refresh sessions текущего пользователя.
+- `POST /auth/revoke-session` позволяет отозвать конкретную refresh session, если у клиента есть её refresh token.
+- Повторное использование уже ротированного refresh token считается replay/compromise сигналом и отзывает всю его token family.
+
+## Temporary legacy auth compatibility
+
+- Основной и поддерживаемый контракт для защищённых роутов: `Authorization: Bearer <access_token>`.
+- Старый заголовок `token` больше не считается нормальным публичным контрактом и убран из `.env.example`.
+- В backend всё ещё оставлен временный аварийный флаг `ALLOW_LEGACY_TOKEN_HEADER=true` для контролируемой миграции старых клиентов.
+- `ALLOW_LEGACY_TOKEN_HEADER` по умолчанию выключен и должен использоваться только как краткоживущая совместимость.
+- Текущий `LAL_web` уже использует `Authorization: Bearer`, поэтому отдельная фронтенд-миграция для header-формата не нужна.
+
+## Auth brute-force protection
+
+- `POST /auth/login` защищён двумя лимитами: более мягким `per-IP` и более строгим `per email + IP`.
+- После серии неудачных логинов backend включает временный lockout и отвечает `429 Too Many Requests` с `Retry-After`.
+- `POST /auth/register` ограничен по количеству попыток с одного IP, чтобы endpoint не был бесконечной мишенью для abuse.
+- Счётчики throttling хранятся в БД, а не только в памяти процесса, поэтому защита остаётся полезной и при нескольких инстансах backend.
+- Текущая реализация использует `request.client.host`; если backend стоит за reverse proxy/load balancer, важно корректно настроить передачу реального client IP на уровне инфраструктуры.
 
 Если frontend запускается локально на Vite, дефолтный `CORS_ALLOW_ORIGINS` уже покрывает `http://localhost:5173` и `http://127.0.0.1:5173`.
 

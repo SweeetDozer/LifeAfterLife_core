@@ -54,4 +54,27 @@ class UserLoginResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     access_token: str
+    refresh_token: str
     token_type: Literal["bearer"]
+
+
+class RefreshTokenRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    refresh_token: str
+
+    @field_validator("refresh_token")
+    @classmethod
+    def validate_refresh_token(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Refresh token cannot be empty")
+        if len(normalized) > 2048:
+            raise ValueError("Refresh token is too long")
+        return normalized
+
+
+class AuthSessionActionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    detail: str
