@@ -98,15 +98,11 @@ class CRUD:
         "viewer": "viewer",
         "editor": "editor",
         "owner": "owner",
-        "view": "viewer",
-        "edit": "editor",
     }
 
     TREE_ACCESS_STORAGE_BY_ROLE = {
         "viewer": "viewer",
         "editor": "editor",
-        "view": "viewer",
-        "edit": "editor",
     }
     TREE_ACCESS_ASSIGNABLE_ROLES = frozenset({"viewer", "editor"})
 
@@ -504,8 +500,6 @@ class CRUD:
         SELECT
             CASE
                 WHEN family_trees.user_id = $1 THEN 'owner'
-                WHEN tree_access.access_level = 'edit' THEN 'editor'
-                WHEN tree_access.access_level = 'view' THEN 'viewer'
                 WHEN tree_access.access_level IS NOT NULL THEN tree_access.access_level::text
                 WHEN family_trees.is_public = TRUE THEN 'viewer'
                 ELSE NULL

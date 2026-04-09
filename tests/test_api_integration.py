@@ -670,10 +670,7 @@ class _InMemoryState:
 
         access_entry = self.tree_access.get((tree_id, user_id))
         if access_entry is not None:
-            return {
-                "view": "viewer",
-                "edit": "editor",
-            }.get(access_entry["access_level"], access_entry["access_level"])
+            return access_entry["access_level"]
 
         if tree["is_public"]:
             return "viewer"
@@ -725,10 +722,7 @@ class _InMemoryState:
         return {
             "user_id": user_id,
             "email": user["email"],
-            "access_level": {
-                "view": "viewer",
-                "edit": "editor",
-            }.get(entry["access_level"], entry["access_level"]),
+            "access_level": entry["access_level"],
         }
 
     def create_person(
@@ -1973,7 +1967,7 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(forbidden_revoke_response.status_code, 403)
         self.assertEqual(forbidden_revoke_response.json(), {"detail": "Access denied"})
 
-    def test_tree_access_accepts_legacy_access_level_aliases(self):
+    def test_tree_access_rejects_legacy_access_level_aliases(self):
         owner_headers = self._auth_headers(email="owner@example.com")
         self._register_user(email="viewer@example.com")
 
@@ -1988,11 +1982,7 @@ class ApiIntegrationTests(unittest.TestCase):
             json={"email": "viewer@example.com", "access_level": "view"},
             headers=owner_headers,
         )
-        self.assertEqual(grant_response.status_code, 200)
-        self.assertEqual(
-            grant_response.json(),
-            {"user_id": 2, "access_level": "viewer"},
-        )
+        self.assertEqual(grant_response.status_code, 422)
 
     def test_tree_access_rejects_owner_grant_duplicate_grant_and_invalid_updates(self):
         owner_headers = self._auth_headers(email="owner@example.com")
@@ -2089,7 +2079,7 @@ class ApiIntegrationTests(unittest.TestCase):
             headers=owner_headers,
         ).json()["tree_id"]
 
-        self.state.upsert_tree_access(tree_id, 1, "view")
+        self.state.upsert_tree_access(tree_id, 1, "viewer")
 
         list_response = self.client.get(f"/trees/{tree_id}/access", headers=owner_headers)
         self.assertEqual(list_response.status_code, 200)

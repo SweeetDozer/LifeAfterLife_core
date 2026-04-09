@@ -76,17 +76,6 @@ class TreeAccessGrantRequest(BaseModel):
     email: str
     access_level: Literal["viewer", "editor"]
 
-    @field_validator("access_level", mode="before")
-    @classmethod
-    def normalize_access_level(cls, value):
-        legacy_mapping = {
-            "view": "viewer",
-            "edit": "editor",
-        }
-        if isinstance(value, str):
-            return legacy_mapping.get(value, value)
-        return value
-
 
 class TreeAccessRead(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -107,17 +96,6 @@ class TreeAccessUpdateRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     access_level: Literal["viewer", "editor"]
-
-    @field_validator("access_level", mode="before")
-    @classmethod
-    def normalize_access_level(cls, value):
-        legacy_mapping = {
-            "view": "viewer",
-            "edit": "editor",
-        }
-        if isinstance(value, str):
-            return legacy_mapping.get(value, value)
-        return value
 
 
 class TreeAccessUpdateResponse(BaseModel):
